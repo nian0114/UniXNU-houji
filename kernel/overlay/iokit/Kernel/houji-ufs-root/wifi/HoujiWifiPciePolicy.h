@@ -42,30 +42,41 @@ extern "C" {
 #define HOUJI_WCN7850_DEVICE_ID     0x1107u
 #define HOUJI_WCN7850_ID_WORD       ((HOUJI_WCN7850_DEVICE_ID << 16) | HOUJI_WCN7850_VENDOR_ID)
 
-/* Qualcomm PCIe 2.7.0 / SM8650 PARF offsets */
+/* Qualcomm PCIe 2.7.0 / 1.9.0 (SM8650) PARF offsets */
 #define HOUJI_PARF_SYS_CTRL             0x0000u
 #define HOUJI_PARF_PM_CTRL              0x0020u
 #define HOUJI_PARF_PM_STTS              0x0024u
 #define HOUJI_PARF_PHY_CTRL             0x0040u
+#define HOUJI_PARF_DBI_BASE_ADDR_V1     0x0168u
+#define HOUJI_PARF_SLV_ADDR_SPACE_V1    0x016cu
 #define HOUJI_PARF_MHI_CLK_RST_CTRL     0x0174u
+#define HOUJI_PARF_Q2A_FLUSH            0x01acu
 #define HOUJI_PARF_LTSSM                0x01b0u
 #define HOUJI_PARF_DBI_BASE_ADDR_V2     0x0350u
 #define HOUJI_PARF_DBI_BASE_ADDR_V2_HI  0x0354u
 #define HOUJI_PARF_SLV_ADDR_SPACE_V2    0x0358u
 #define HOUJI_PARF_SLV_ADDR_SPACE_V2_HI 0x035cu
+#define HOUJI_PARF_ATU_BASE_ADDR        0x0634u
+#define HOUJI_PARF_ATU_BASE_ADDR_HI     0x0638u
 #define HOUJI_PARF_DEVICE_TYPE          0x1000u
 
+/* Read-only GCC PCIe0 diagnostic base (0x16b000, verified in ClockDxe.efi) */
+#define HOUJI_GCC_PCIE0_BASE            0x0016b000u
+
 /* PARF bits */
+#define HOUJI_PARF_SYS_CTRL_L1_CLK_RMV_DIS    (1u << 1)
+#define HOUJI_PARF_SYS_CTRL_L23_CLK_RMV_DIS   (1u << 2)
 #define HOUJI_PARF_SYS_CTRL_AUX_PWR_DET       (1u << 4)
 #define HOUJI_PARF_SYS_CTRL_CORE_CLK_CGC_DIS  (1u << 6)
 #define HOUJI_PARF_SYS_CTRL_MSTR_ACLK_CGC_DIS (1u << 10)
-#define HOUJI_PARF_SYS_CTRL_SLV_DBI_WAKE_DIS  (1u << 11)
+#define HOUJI_PARF_SYS_CTRL_SLV_ACLK_CGC_DIS  (1u << 11)
 #define HOUJI_PARF_SYS_CTRL_MST_WAKEUP_EN     (1u << 13)
 #define HOUJI_PARF_SYS_CTRL_SLV_WAKEUP_EN     (1u << 14)
 #define HOUJI_PARF_PM_CTRL_REQ_NOT_ENTR_L1    (1u << 5)
 #define HOUJI_PARF_PHY_CTRL_TEST_PWR_DOWN     (1u << 0)
 #define HOUJI_PARF_MHI_A7_AXI_CLK_EN          (1u << 0)
 #define HOUJI_PARF_MHI_MSTR_AXI_CLK_EN        (1u << 1)
+#define HOUJI_PARF_MHI_BYPASS                 (1u << 4)
 #define HOUJI_PARF_LTSSM_EN                   (1u << 8)
 #define HOUJI_PARF_LTSSM_STATE_MASK           0x3fu
 #define HOUJI_PARF_LTSSM_L0                   0x11u

@@ -9,14 +9,16 @@
 
 static struct {
   OSSharedPtr<IOMemoryMap> gpioMaps[4];
-  OSSharedPtr<IOMemoryMap> parfMap, phyMap, dbiMap, iatuMap, ecamMap, bar0Map;
+  OSSharedPtr<IOMemoryMap> parfMap, phyMap, dbiMap, iatuMap, ecamMap, bar0Map, gccMap;
   uintptr_t gpio[4]; // 0=WLAN_EN(16), 1=PERST#(94), 2=CLKREQ#(95), 3=WAKE#(96)
-  uintptr_t parf, phy, dbi, iatu, ecam, bar0;
+  uintptr_t parf, phy, dbi, iatu, ecam, bar0, gcc;
   bool started;
   uint32_t stage, error;
   uint32_t phyStatus, phyReady;
   uint32_t parfSysCtrl, parfLtssm, elbiStts, dbiLinkSts;
-  uint32_t rcId, epId, epClass, epSubsys;
+  uint32_t parfInitSys, parfInitDbi, parfInitSlv, parfInitAtu, parfInitQ2a, parfInitMhi, parfInitDev;
+  uint32_t gccBcr, gccGdscr, gccSlvQ2a, gccSlvAxi, gccCfgAhb, gccPipeCbcr, gccPipeSrc;
+  uint32_t rcIdMode, rcId, epId, epClass, epSubsys;
   uint32_t bar0Base, bar0Size, bar0Is64;
   uint32_t mhiRegLen, mhiVer, mhiCfg, mhiStatus;
 } hwWifi;
@@ -100,46 +102,69 @@ static uint32_t hwWifiRun(void) {
   hwWifiWrite32(hwWifi.gpio[0], 0, houji_wifi_tlmm_cfg(origCfg[0], 3u, 0u, 7u, 1u));
   hwWifiSleepMs(30);
 
-  // Stage 2: Map PARF & QMP PHY, configure PARF, run 115-entry houji QMP PHY sequence.
+  // Stage 2: Map PARF, QMP PHY, and read-only GCC PCIe0 block; configure PARF & PHY.
   hwWifiSetStage(HOUJI_WIFI_STAGE_PHY);
   hwWifi.parf = mapPhys(HOUJI_PCIE0_PARF_BASE, HOUJI_PCIE0_PARF_SIZE, hwWifi.parfMap);
   hwWifi.phy  = mapPhys(HOUJI_PCIE0_PHY_BASE, HOUJI_PCIE0_PHY_SIZE, hwWifi.phyMap);
+  hwWifi.gcc  = mapPhys(HOUJI_GCC_PCIE0_BASE, 0x1000, hwWifi.gccMap);
   if (!hwWifi.parf || !hwWifi.phy) return 30u;
 
+  if (hwWifi.gcc) {
+    __atomic_store_n(&hwWifi.gccBcr,      hwWifiRead32(hwWifi.gcc, 0x00u), __ATOMIC_RELAXED);
+    __atomic_store_n(&hwWifi.gccGdscr,    hwWifiRead32(hwWifi.gcc, 0x04u), __ATOMIC_RELAXED);
+    __atomic_store_n(&hwWifi.gccSlvQ2a,   hwWifiRead32(hwWifi.gcc, 0x1cu), __ATOMIC_RELAXED);
+    __atomic_store_n(&hwWifi.gccSlvAxi,   hwWifiRead32(hwWifi.gcc, 0x20u), __ATOMIC_RELAXED);
+    __atomic_store_n(&hwWifi.gccCfgAhb,   hwWifiRead32(hwWifi.gcc, 0x38u), __ATOMIC_RELAXED);
+    __atomic_store_n(&hwWifi.gccPipeCbcr, hwWifiRead32(hwWifi.gcc, 0x48u), __ATOMIC_RELAXED);
+    __atomic_store_n(&hwWifi.gccPipeSrc,  hwWifiRead32(hwWifi.gcc, 0x4cu), __ATOMIC_RELAXED);
+  }
+
   uint32_t sysCtrl = hwWifiRead32(hwWifi.parf, HOUJI_PARF_SYS_CTRL);
-  __atomic_store_n(&hwWifi.parfSysCtrl, sysCtrl, __ATOMIC_RELAXED);
-  IOLog("HOUJI WIFI PCIE: PARF initial sys=%08x pm=%08x phy_ctrl=%08x ltssm=%08x\n",
-        sysCtrl,
-        hwWifiRead32(hwWifi.parf, HOUJI_PARF_PM_CTRL),
-        hwWifiRead32(hwWifi.parf, HOUJI_PARF_PHY_CTRL),
-        hwWifiRead32(hwWifi.parf, HOUJI_PARF_LTSSM));
+  uint32_t initDbi = hwWifiRead32(hwWifi.parf, HOUJI_PARF_DBI_BASE_ADDR_V2);
+  uint32_t initSlv = hwWifiRead32(hwWifi.parf, HOUJI_PARF_SLV_ADDR_SPACE_V2);
+  uint32_t initAtu = hwWifiRead32(hwWifi.parf, HOUJI_PARF_ATU_BASE_ADDR);
+  uint32_t initQ2a = hwWifiRead32(hwWifi.parf, HOUJI_PARF_Q2A_FLUSH);
+  uint32_t initMhi = hwWifiRead32(hwWifi.parf, HOUJI_PARF_MHI_CLK_RST_CTRL);
+  uint32_t initDev = hwWifiRead32(hwWifi.parf, HOUJI_PARF_DEVICE_TYPE);
+  __atomic_store_n(&hwWifi.parfInitSys, sysCtrl, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.parfInitDbi, initDbi, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.parfInitSlv, initSlv, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.parfInitAtu, initAtu, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.parfInitQ2a, initQ2a, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.parfInitMhi, initMhi, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.parfInitDev, initDev, __ATOMIC_RELAXED);
   if (sysCtrl == 0xffffffffu) return 31u;
 
-  // Enable PARF clocks, RC mode, DBI base, slave address space, and clear PHY_TEST_PWR_DOWN.
-  uint32_t mhiClk = hwWifiRead32(hwWifi.parf, HOUJI_PARF_MHI_CLK_RST_CTRL);
+  // Complete qcom_pcie_init_2_7_0 / ops_1_9_0 PARF setup before QMP PHY start.
+  uint32_t phyCtrl = hwWifiRead32(hwWifi.parf, HOUJI_PARF_PHY_CTRL);
+  hwWifiWrite32(hwWifi.parf, HOUJI_PARF_PHY_CTRL, phyCtrl & ~HOUJI_PARF_PHY_CTRL_TEST_PWR_DOWN);
+
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_MHI_CLK_RST_CTRL,
-                mhiClk | HOUJI_PARF_MHI_A7_AXI_CLK_EN | HOUJI_PARF_MHI_MSTR_AXI_CLK_EN);
+                initMhi | HOUJI_PARF_MHI_A7_AXI_CLK_EN |
+                HOUJI_PARF_MHI_MSTR_AXI_CLK_EN | HOUJI_PARF_MHI_BYPASS);
 
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_SLV_ADDR_SPACE_V2, HOUJI_PCIE0_SLV_SPACE_SIZE);
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_SLV_ADDR_SPACE_V2_HI, 0u);
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_DBI_BASE_ADDR_V2, HOUJI_PCIE0_DBI_BASE);
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_DBI_BASE_ADDR_V2_HI, 0u);
+  hwWifiWrite32(hwWifi.parf, HOUJI_PARF_ATU_BASE_ADDR, HOUJI_PCIE0_IATU_BASE);
+  hwWifiWrite32(hwWifi.parf, HOUJI_PARF_ATU_BASE_ADDR_HI, 0u);
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_DEVICE_TYPE, HOUJI_PARF_DEVICE_TYPE_RC);
 
   uint32_t pmCtrl = hwWifiRead32(hwWifi.parf, HOUJI_PARF_PM_CTRL);
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_PM_CTRL, pmCtrl | HOUJI_PARF_PM_CTRL_REQ_NOT_ENTR_L1);
 
-  sysCtrl |= HOUJI_PARF_SYS_CTRL_AUX_PWR_DET |
+  sysCtrl |= HOUJI_PARF_SYS_CTRL_L1_CLK_RMV_DIS |
+             HOUJI_PARF_SYS_CTRL_L23_CLK_RMV_DIS |
+             HOUJI_PARF_SYS_CTRL_AUX_PWR_DET |
              HOUJI_PARF_SYS_CTRL_CORE_CLK_CGC_DIS |
              HOUJI_PARF_SYS_CTRL_MSTR_ACLK_CGC_DIS |
-             HOUJI_PARF_SYS_CTRL_SLV_DBI_WAKE_DIS |
+             HOUJI_PARF_SYS_CTRL_SLV_ACLK_CGC_DIS |
              HOUJI_PARF_SYS_CTRL_MST_WAKEUP_EN |
              HOUJI_PARF_SYS_CTRL_SLV_WAKEUP_EN;
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_SYS_CTRL, sysCtrl);
+  hwWifiWrite32(hwWifi.parf, HOUJI_PARF_Q2A_FLUSH, 0u);
   __atomic_store_n(&hwWifi.parfSysCtrl, sysCtrl, __ATOMIC_RELAXED);
-
-  uint32_t phyCtrl = hwWifiRead32(hwWifi.parf, HOUJI_PARF_PHY_CTRL);
-  hwWifiWrite32(hwWifi.parf, HOUJI_PARF_PHY_CTRL, phyCtrl & ~HOUJI_PARF_PHY_CTRL_TEST_PWR_DOWN);
 
   // Hold QMP PHY PCS in SW reset briefly, then replay exact houji.dtb 115-entry sequence.
   hwWifiWrite32(hwWifi.phy, HOUJI_PHY_SW_RESET, 0x01u);
@@ -173,9 +198,28 @@ static uint32_t hwWifiRun(void) {
   hwWifi.iatu = mapPhys(HOUJI_PCIE0_IATU_BASE, HOUJI_PCIE0_IATU_SIZE, hwWifi.iatuMap);
   if (!hwWifi.dbi || !hwWifi.iatu) return 40u;
 
+  hwWifiSleepMs(2);
+  uint32_t rcMode = 1u;
   uint32_t rcId = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_VENDOR_DEVICE);
+  if (rcId == 0xffffffffu || rcId == 0u) {
+    // Fallback 1: restore PARF_DBI_BASE_ADDR_V2 to its reset value (0 or relative offset).
+    hwWifiWrite32(hwWifi.parf, HOUJI_PARF_DBI_BASE_ADDR_V2, initDbi);
+    IODelay(100);
+    rcMode = 2u;
+    rcId = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_VENDOR_DEVICE);
+  }
+  if (rcId == 0xffffffffu || rcId == 0u) {
+    // Fallback 2: program legacy PARF_DBI_BASE_ADDR_V1 (0x168) / SLV_ADDR_SPACE_V1 (0x16c).
+    hwWifiWrite32(hwWifi.parf, HOUJI_PARF_DBI_BASE_ADDR_V2, HOUJI_PCIE0_DBI_BASE);
+    hwWifiWrite32(hwWifi.parf, HOUJI_PARF_DBI_BASE_ADDR_V1, HOUJI_PCIE0_DBI_BASE);
+    hwWifiWrite32(hwWifi.parf, HOUJI_PARF_SLV_ADDR_SPACE_V1, HOUJI_PCIE0_SLV_SPACE_SIZE);
+    IODelay(100);
+    rcMode = 3u;
+    rcId = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_VENDOR_DEVICE);
+  }
+  __atomic_store_n(&hwWifi.rcIdMode, rcMode, __ATOMIC_RELAXED);
   __atomic_store_n(&hwWifi.rcId, rcId, __ATOMIC_RELAXED);
-  IOLog("HOUJI WIFI PCIE: RC DBI id=%08x\n", rcId);
+  IOLog("HOUJI WIFI PCIE: RC DBI id=%08x mode=%u\n", rcId, rcMode);
   if (rcId == 0xffffffffu || rcId == 0u) return 41u;
 
   // Enable DBI read-only register writes to configure Type 1 RC bridge and 2-lane link.
@@ -321,16 +365,32 @@ extern "C" void houji_wifi_pcie_snapshot(void) {
     __atomic_load_n(&hwWifi.parfLtssm, __ATOMIC_RELAXED),
     __atomic_load_n(&hwWifi.elbiStts, __ATOMIC_RELAXED),
     __atomic_load_n(&hwWifi.dbiLinkSts, __ATOMIC_RELAXED));
-  IOLog("HOUJI WIFI PCIE: stage=%u err=%u phy-ready=%u phy=%08x ltssm=%02x link=Gen%u/x%u rc=%08x id=%08x bar0=%08x/%x mhi-ver=%08x mhi-st=%08x\n",
+  IOLog("HOUJI WIFI PCIE: stage=%u err=%u phy-ready=%u phy=%08x ltssm=%02x link=Gen%u/x%u rc=%08x(m=%u) id=%08x bar0=%08x/%x mhi-ver=%08x mhi-st=%08x\n",
         __atomic_load_n(&hwWifi.stage, __ATOMIC_ACQUIRE),
         __atomic_load_n(&hwWifi.error, __ATOMIC_ACQUIRE),
         __atomic_load_n(&hwWifi.phyReady, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.phyStatus, __ATOMIC_RELAXED),
         link.ltssm_state, link.link_speed, link.link_width,
         __atomic_load_n(&hwWifi.rcId, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.rcIdMode, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.epId, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.bar0Base, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.bar0Size, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.mhiVer, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.mhiStatus, __ATOMIC_RELAXED));
+  IOLog("HOUJI WIFI DIAG: parf init sys=%08x dbi=%08x slv=%08x atu=%08x q2a=%08x mhi=%08x dev=%08x | gcc bcr=%08x gdsc=%08x q2a=%08x slv=%08x ahb=%08x pipe=%08x/%08x\n",
+        __atomic_load_n(&hwWifi.parfInitSys, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.parfInitDbi, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.parfInitSlv, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.parfInitAtu, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.parfInitQ2a, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.parfInitMhi, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.parfInitDev, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.gccBcr, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.gccGdscr, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.gccSlvQ2a, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.gccSlvAxi, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.gccCfgAhb, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.gccPipeCbcr, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.gccPipeSrc, __ATOMIC_RELAXED));
 }
