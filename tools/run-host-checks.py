@@ -66,6 +66,7 @@ CHECKS = (
     'metal-command-dictionary.py',
     'statusbar-geometry.py',
     'spmi-keys.py',
+    'wifi-pcie.py',
 )
 
 
