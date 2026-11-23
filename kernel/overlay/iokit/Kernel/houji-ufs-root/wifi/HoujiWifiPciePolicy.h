@@ -33,9 +33,15 @@ extern "C" {
 #define HOUJI_TLMM_BASE             0x0f100000u
 #define HOUJI_TLMM_STRIDE           0x00001000u
 #define HOUJI_TLMM_GPIO_WLAN_EN     16u
+#define HOUJI_TLMM_GPIO_SW_CTRL     18u
+#define HOUJI_TLMM_GPIO_WLAN_SW     19u
 #define HOUJI_TLMM_GPIO_PERST       94u
 #define HOUJI_TLMM_GPIO_CLKREQ      95u
 #define HOUJI_TLMM_GPIO_WAKE        96u
+
+/* Read-only TCSR PCIe0 100 MHz RefClk enable register (verified in ClockDxe.efi) */
+#define HOUJI_TCSR_PCIE0_CLKREF_PA  0x01ff1000u
+#define HOUJI_TCSR_PCIE0_CLKREF_OFF 0x00000100u
 
 /* WCN7850 (qcom,cnss-kiwi, dtbo_a.img fragment 91) PCI identity */
 #define HOUJI_WCN7850_VENDOR_ID     0x17cbu
