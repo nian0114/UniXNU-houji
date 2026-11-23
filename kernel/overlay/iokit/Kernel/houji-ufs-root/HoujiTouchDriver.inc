@@ -187,8 +187,10 @@ static void htThread(void *,wait_result_t) {
   thread_terminate(current_thread());
 }
 #include "HoujiSpmiKeys.inc"
+#include "wifi/HoujiWifiPcie.inc"
 static void houjiTouchStart(void) {
   houjiKeysStart();
+  houjiWifiPcieStart();
   int enabled=0;PE_parse_boot_argn("houji_touch",&enabled,sizeof(enabled));
   if(enabled!=1 || ht.started)return;ht.started=true;
   thread_t thread; kern_return_t kr=kernel_thread_start(htThread,nullptr,&thread);
@@ -196,6 +198,7 @@ static void houjiTouchStart(void) {
 }
 extern "C" void houji_touch_driver_report(void) {
   if(hk.started)houjiKeysReport();
+  houji_wifi_pcie_snapshot();
   if(!ht.started)return;
   IOLog("HOUJI TOUCH: stage=%u error=%u frames=%u events=%u irq-polls=%u device-write=%u host-write=%u config=%u last-header=%08x discarded=%u; GPIO SPI, no DMA or firmware writes\n",
     __atomic_load_n(&ht.stage,__ATOMIC_ACQUIRE),__atomic_load_n(&ht.error,__ATOMIC_ACQUIRE),
