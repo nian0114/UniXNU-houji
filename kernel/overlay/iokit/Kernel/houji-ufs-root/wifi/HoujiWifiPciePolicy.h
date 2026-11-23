@@ -53,6 +53,7 @@ extern "C" {
 #define HOUJI_PARF_PM_CTRL              0x0020u
 #define HOUJI_PARF_PM_STTS              0x0024u
 #define HOUJI_PARF_PHY_CTRL             0x0040u
+#define HOUJI_PARF_PHY_REFCLK           0x004cu
 #define HOUJI_PARF_DBI_BASE_ADDR_V1     0x0168u
 #define HOUJI_PARF_SLV_ADDR_SPACE_V1    0x016cu
 #define HOUJI_PARF_MHI_CLK_RST_CTRL     0x0174u
@@ -125,6 +126,7 @@ extern "C" {
 #define HOUJI_IATU_ENABLE           0x80000000u
 
 /* QMP PHY status / reset / power-down offsets from houji.dtb */
+#define HOUJI_PHY_COM_C_READY_STTS  0x01ccu
 #define HOUJI_PHY_SW_RESET          0x0200u
 #define HOUJI_PHY_PCS_STATUS        0x0214u
 #define HOUJI_PHY_STATUS_BIT        (1u << 6)

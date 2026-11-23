@@ -14,9 +14,9 @@ static struct {
   uintptr_t parf, phy, dbi, iatu, ecam, bar0, gcc, tcsr;
   bool started;
   uint32_t stage, error;
-  uint32_t phyStatus, phyReady;
-  uint32_t parfSysCtrl, parfLtssm, maxLtssm, parfPmStts, elbiStts, dbiLinkSts, dbiDbg0, dbiDbg1;
-  uint32_t gpioInMask, clkreqOrigCfg, tcsrClkRef;
+  uint32_t phyStatus, phyReady, phyResetSt, phyCReady, phyPolls;
+  uint32_t parfSysCtrl, parfRefClk, parfLtssm, maxLtssm, parfPmStts, elbiStts, dbiLnkCap, dbiLinkSts, dbiDbg0, dbiDbg1;
+  uint32_t gpioPreMask, gpioInMask, clkreqOrigCfg, tcsrClkRef;
   uint32_t rcId, epId, epClass, epSubsys;
   uint32_t bar0Base, bar0Size, bar0Is64;
   uint32_t mhiRegLen, mhiVer, mhiCfg, mhiStatus;
@@ -119,6 +119,7 @@ static uint32_t hwWifiRun(void) {
   hwWifiWrite32(hwWifi.gpio[2], 0, houji_wifi_tlmm_cfg(origCfg[2], 3u, 1u, 0u, 0u));
   hwWifiWrite32(hwWifi.gpio[3], 0, houji_wifi_tlmm_cfg(origCfg[3], 3u, 0u, 0u, 0u));
   hwWifiSleepMs(10);
+  __atomic_store_n(&hwWifi.gpioPreMask, hwWifiSampleGpioIn(), __ATOMIC_RELAXED);
 
   // Rising edge on WLAN_EN (gpio16 HIGH) and wait 120 ms for WCN7850 PMU/XO/EP boot.
   hwWifiWrite32(hwWifi.gpio[0], 4, wlanIo | 2u);
@@ -165,21 +166,29 @@ static uint32_t hwWifiRun(void) {
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_SYS_CTRL, sysCtrl);
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_Q2A_FLUSH, 0u);
   __atomic_store_n(&hwWifi.parfSysCtrl, sysCtrl, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.parfRefClk, hwWifiRead32(hwWifi.parf, HOUJI_PARF_PHY_REFCLK), __ATOMIC_RELAXED);
 
-  // Hold QMP PHY PCS in SW reset briefly, then replay exact houji.dtb 115-entry sequence.
+  // Proper QMP v6.20 init order: power-up (0x240=3) FIRST, then hold SW_RESET=1,
+  // program SERDES/TX/RX/PCS registers, then deassert SW_RESET=0 and START=3.
+  hwWifiWrite32(hwWifi.phy, houji_wifi_phy_seq[0].offset, houji_wifi_phy_seq[0].value);
+  IODelay(10);
   hwWifiWrite32(hwWifi.phy, HOUJI_PHY_SW_RESET, 0x01u);
   IODelay(10);
-  for (unsigned i = 0; i < HOUJI_WIFI_PHY_SEQ_COUNT; i++) {
+  __atomic_store_n(&hwWifi.phyResetSt, hwWifiRead32(hwWifi.phy, HOUJI_PHY_PCS_STATUS), __ATOMIC_RELAXED);
+  for (unsigned i = 1; i < HOUJI_WIFI_PHY_SEQ_COUNT; i++) {
     hwWifiWrite32(hwWifi.phy, houji_wifi_phy_seq[i].offset, houji_wifi_phy_seq[i].value);
     if (houji_wifi_phy_seq[i].delay_us) {
       IODelay(houji_wifi_phy_seq[i].delay_us);
     }
   }
+  IODelay(100);
 
   // Poll PHY PCS_STATUS (0x214) bit 6 == 0 (PHYSTATUS ready), bounded to 50 ms.
   uint32_t phySt = 0xffffffffu;
   uint32_t phyReady = 0u;
+  uint32_t phyPolls = 0u;
   for (unsigned i = 0; i < 500; i++) {
+    phyPolls = i + 1u;
     phySt = hwWifiRead32(hwWifi.phy, HOUJI_PHY_PCS_STATUS);
     if (phySt != 0xffffffffu && (phySt & HOUJI_PHY_STATUS_BIT) == 0u) {
       phyReady = 1u;
@@ -187,9 +196,13 @@ static uint32_t hwWifiRun(void) {
     }
     IODelay(100);
   }
+  uint32_t phyCReady = hwWifiRead32(hwWifi.phy, HOUJI_PHY_COM_C_READY_STTS);
   __atomic_store_n(&hwWifi.phyStatus, phySt, __ATOMIC_RELAXED);
   __atomic_store_n(&hwWifi.phyReady, phyReady, __ATOMIC_RELAXED);
-  IOLog("HOUJI WIFI PCIE: PHY status=%08x ready=%u\n", phySt, phyReady);
+  __atomic_store_n(&hwWifi.phyCReady, phyCReady, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.phyPolls, phyPolls, __ATOMIC_RELAXED);
+  IOLog("HOUJI WIFI PCIE: PHY status=%08x c_ready=%08x polls=%u ready=%u\n",
+        phySt, phyCReady, phyPolls, phyReady);
   if (!phyReady) return 32u;
 
   // Stage 3: Configure DBI Root Complex, release PERST#, enable LTSSM, poll link L0.
@@ -201,6 +214,7 @@ static uint32_t hwWifiRun(void) {
   hwWifiSleepMs(2);
   uint32_t rcId = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_VENDOR_DEVICE);
   __atomic_store_n(&hwWifi.rcId, rcId, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.dbiLnkCap, hwWifiRead32(hwWifi.dbi, HOUJI_DBI_EXP_LINK_CAP), __ATOMIC_RELAXED);
   if (rcId == 0xffffffffu || rcId == 0u) return 41u;
 
   // Enable DBI read-only register writes to configure Type 1 RC bridge and 2-lane link.
@@ -236,11 +250,15 @@ static uint32_t hwWifiRun(void) {
   houji_pcie_link_info linkInfo = {0};
   uint32_t elbiSt = 0, dbiLink = 0, dbg0 = 0, dbg1 = 0, maxLtssm = 0;
   for (unsigned ms = 0; ms < 500; ms++) {
-    if (ms == 200) {
-      // Fallback: also assert ELBI_SYS_CTRL LT_ENABLE in case this silicon requires both.
-      uint32_t elbiCtrl = hwWifiRead32(hwWifi.dbi, HOUJI_PCIE0_ELBI_OFFSET + HOUJI_ELBI_SYS_CTRL);
-      hwWifiWrite32(hwWifi.dbi, HOUJI_PCIE0_ELBI_OFFSET + HOUJI_ELBI_SYS_CTRL,
-                    elbiCtrl | HOUJI_ELBI_LT_ENABLE);
+    if (ms == 250) {
+      // Fallback: try 1-lane Gen1 link config + re-trigger LTSSM in case Lane 1 blocks training.
+      uint32_t m1 = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_MISC_CONTROL_1);
+      hwWifiWrite32(hwWifi.dbi, HOUJI_DBI_MISC_CONTROL_1, m1 | HOUJI_DBI_RO_WR_EN);
+      uint32_t p = (hwWifiRead32(hwWifi.dbi, HOUJI_DBI_PORT_LINK_CTRL) & ~(0x3fu << 16)) | (1u << 16);
+      hwWifiWrite32(hwWifi.dbi, HOUJI_DBI_PORT_LINK_CTRL, p);
+      uint32_t l = (hwWifiRead32(hwWifi.dbi, HOUJI_DBI_LINK_WIDTH_SPEED) & ~(0x1ffu << 8)) | (1u << 8);
+      hwWifiWrite32(hwWifi.dbi, HOUJI_DBI_LINK_WIDTH_SPEED, l);
+      hwWifiWrite32(hwWifi.dbi, HOUJI_DBI_MISC_CONTROL_1, m1 & ~HOUJI_DBI_RO_WR_EN);
     }
     ltssm   = hwWifiRead32(hwWifi.parf, HOUJI_PARF_LTSSM);
     elbiSt  = hwWifiRead32(hwWifi.dbi, HOUJI_PCIE0_ELBI_OFFSET + HOUJI_ELBI_SYS_STTS);
@@ -373,15 +391,16 @@ extern "C" void houji_wifi_pcie_snapshot(void) {
         __atomic_load_n(&hwWifi.bar0Size, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.mhiVer, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.mhiStatus, __ATOMIC_RELAXED));
+  uint32_t g0 = __atomic_load_n(&hwWifi.gpioPreMask, __ATOMIC_RELAXED);
   uint32_t gm = __atomic_load_n(&hwWifi.gpioInMask, __ATOMIC_RELAXED);
-  IOLog("HOUJI WIFI DIAG: gpio(16=%u 94=%u 95=%u 96=%u 18=%u 19=%u) tcsr=%08x parf-ltssm=%08x pm=%08x elbi=%08x dbi-lnk=%08x dbg0=%08x dbg1=%08x\n",
-        (gm >> 0) & 1u, (gm >> 1) & 1u, (gm >> 2) & 1u,
-        (gm >> 3) & 1u, (gm >> 4) & 1u, (gm >> 5) & 1u,
-        __atomic_load_n(&hwWifi.tcsrClkRef, __ATOMIC_RELAXED),
+  IOLog("HOUJI WIFI DIAG: g0=%02x g1=%02x phy-rst=%02x c_rdy=%02x polls=%u refclk=%08x lnkcap=%08x parf=%08x dbg0=%08x dbg1=%08x\n",
+        g0, gm,
+        __atomic_load_n(&hwWifi.phyResetSt, __ATOMIC_RELAXED) & 0xffu,
+        __atomic_load_n(&hwWifi.phyCReady, __ATOMIC_RELAXED) & 0xffu,
+        __atomic_load_n(&hwWifi.phyPolls, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.parfRefClk, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.dbiLnkCap, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.parfLtssm, __ATOMIC_RELAXED),
-        __atomic_load_n(&hwWifi.parfPmStts, __ATOMIC_RELAXED),
-        __atomic_load_n(&hwWifi.elbiStts, __ATOMIC_RELAXED),
-        __atomic_load_n(&hwWifi.dbiLinkSts, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.dbiDbg0, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.dbiDbg1, __ATOMIC_RELAXED));
 }
