@@ -267,10 +267,8 @@ static uint32_t hwWifiRun(void) {
   uint32_t elbiSt = 0, dbiLink = 0, dbg0 = 0, dbg1 = 0, maxLtssm = 0;
   for (unsigned ms = 0; ms < 500; ms++) {
     if (ms == 250) {
-      // Fallback: enable PARF_PHY_REFCLK SSP_EN (clear USE_PAD) and try 1-lane mode.
-      uint32_t rcVal = (refClkOrig & ~HOUJI_PARF_PHY_REFCLK_USE_PAD) | HOUJI_PARF_PHY_REFCLK_SSP_EN;
-      hwWifiWrite32(hwWifi.parf, HOUJI_PARF_PHY_REFCLK, rcVal);
-      __atomic_store_n(&hwWifi.parfRefClk, hwWifiRead32(hwWifi.parf, HOUJI_PARF_PHY_REFCLK), __ATOMIC_RELAXED);
+      // Fallback: try 1-lane mode if Lane 1 blocks training; keep PARF_PHY_REFCLK at
+      // SM8650 default (0x1019, verified c_rdy=01 in r11).
       uint32_t m1 = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_MISC_CONTROL_1);
       hwWifiWrite32(hwWifi.dbi, HOUJI_DBI_MISC_CONTROL_1, m1 | HOUJI_DBI_RO_WR_EN);
       uint32_t p = (hwWifiRead32(hwWifi.dbi, HOUJI_DBI_PORT_LINK_CTRL) & ~(0x3fu << 16)) | (1u << 16);
@@ -313,7 +311,18 @@ static uint32_t hwWifiRun(void) {
   hwWifi.ecam = mapPhys(HOUJI_PCIE0_ECAM_BASE, 0x1000, hwWifi.ecamMap);
   if (!hwWifi.ecam) return 52u;
 
-  uint32_t epId     = hwWifiRead32(hwWifi.ecam, 0x00u);
+  uint32_t epId = hwWifiRead32(hwWifi.ecam, 0x00u);
+  if (epId == 0xffffffffu || epId == 0u) {
+    // SM8650 AggreNoC strips the 0x60000000 slave aperture base for DBI/ATU; if iATU
+    // also sees relative slave offsets (0x00100000 / 0x00300000), reprogram and retry.
+    (void)hwWifiProgIatu(0u, HOUJI_IATU_TYPE_CFG0,
+                         HOUJI_PCIE0_ECAM_BASE - HOUJI_PCIE0_DBI_BASE,
+                         HOUJI_PCIE0_ECAM_SIZE, houji_wifi_cfg0_target(1u, 0u, 0u));
+    (void)hwWifiProgIatu(1u, HOUJI_IATU_TYPE_MEM,
+                         HOUJI_PCIE0_MMIO_BASE - HOUJI_PCIE0_DBI_BASE,
+                         HOUJI_PCIE0_MMIO_SIZE, HOUJI_PCIE0_MMIO_BASE);
+    epId = hwWifiRead32(hwWifi.ecam, 0x00u);
+  }
   uint32_t epClass  = hwWifiRead32(hwWifi.ecam, 0x08u);
   uint32_t epSubsys = hwWifiRead32(hwWifi.ecam, 0x2cu);
   __atomic_store_n(&hwWifi.epId, epId, __ATOMIC_RELAXED);

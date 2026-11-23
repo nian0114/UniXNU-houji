@@ -250,9 +250,21 @@ PrepareWifiHandoff (VOID)
     }
   }
 
-  // Pipe clock is externally sourced from QMP PHY (BRANCH_HALT_SKIP): enable branch
-  // without requiring IsClockOn==TRUE before XNU runs the QMP PHY init sequence.
+  // Switch gcc_pcie_0_pipe_clk_src (0x16b070) from bi_tcxo (2) to QMP PHY pipe_clk
+  // (external source 0, 250 MHz Gen3) via ClockDxe SelectExternalSource, then enable branch.
   if (HasPipeClock) {
+    if (Clock->SelectExternalSource != NULL) {
+      EFI_STATUS MuxStatus = Clock->SelectExternalSource (
+        Clock, PipeClockId, 250000000, 0, 2, 0, 0, 0
+      );
+      Print (L"HOUJI WIFI UEFI: clock gcc_pcie_0_pipe_clk ext_src=0 rate=250000000 result=%r\n",
+             MuxStatus);
+      if (EFI_ERROR (MuxStatus)) {
+        MuxStatus = Clock->SelectExternalSource (Clock, PipeClockId, 0, 0, 2, 0, 0, 0);
+        Print (L"HOUJI WIFI UEFI: clock gcc_pcie_0_pipe_clk ext_src=0 rate=0 result=%r\n",
+               MuxStatus);
+      }
+    }
     BOOLEAN PipeOn = FALSE;
     EFI_STATUS PipeStatus = Clock->EnableClock (Clock, PipeClockId);
     if (!EFI_ERROR (PipeStatus)) {
