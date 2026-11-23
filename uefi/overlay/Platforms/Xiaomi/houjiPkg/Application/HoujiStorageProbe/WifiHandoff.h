@@ -226,6 +226,20 @@ PrepareWifiHandoff (VOID)
 
   for (UINTN I = 0; I < ARRAY_SIZE (Clocks); I++) {
     BOOLEAN On = FALSE;
+    UINT32 TargetHz = 0;
+    if (AsciiStrCmp (Clocks[I], "gcc_pcie_0_aux_clk") == 0) {
+      TargetHz = 19200000;
+    } else if (AsciiStrCmp (Clocks[I], "gcc_pcie_0_phy_rchng_clk") == 0) {
+      TargetHz = 100000000;
+    }
+    if (TargetHz != 0 && Clock->SetClockFreqHz != NULL) {
+      UINT32 ActualHz = 0;
+      EFI_STATUS FreqStatus = Clock->SetClockFreqHz (
+        Clock, ClockIds[I], TargetHz, EFI_CLOCK_FREQUENCY_HZ_EXACT, &ActualHz
+      );
+      Print (L"HOUJI WIFI UEFI: clock %a rate=%u/%u result=%r\n",
+             Clocks[I], ActualHz, TargetHz, FreqStatus);
+    }
     Status = Clock->EnableClock (Clock, ClockIds[I]);
     if (!EFI_ERROR (Status)) {
       (VOID)Clock->IsClockOn (Clock, ClockIds[I], &On);

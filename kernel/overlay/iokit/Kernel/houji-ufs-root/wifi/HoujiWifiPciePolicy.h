@@ -71,23 +71,26 @@ extern "C" {
 #define HOUJI_GCC_PCIE0_BASE            0x0016b000u
 
 /* PARF bits */
-#define HOUJI_PARF_SYS_CTRL_L1_CLK_RMV_DIS    (1u << 1)
-#define HOUJI_PARF_SYS_CTRL_L23_CLK_RMV_DIS   (1u << 2)
-#define HOUJI_PARF_SYS_CTRL_AUX_PWR_DET       (1u << 4)
-#define HOUJI_PARF_SYS_CTRL_CORE_CLK_CGC_DIS  (1u << 6)
-#define HOUJI_PARF_SYS_CTRL_MSTR_ACLK_CGC_DIS (1u << 10)
-#define HOUJI_PARF_SYS_CTRL_SLV_ACLK_CGC_DIS  (1u << 11)
-#define HOUJI_PARF_SYS_CTRL_MST_WAKEUP_EN     (1u << 13)
-#define HOUJI_PARF_SYS_CTRL_SLV_WAKEUP_EN     (1u << 14)
-#define HOUJI_PARF_PM_CTRL_REQ_NOT_ENTR_L1    (1u << 5)
-#define HOUJI_PARF_PHY_CTRL_TEST_PWR_DOWN     (1u << 0)
-#define HOUJI_PARF_MHI_A7_AXI_CLK_EN          (1u << 0)
-#define HOUJI_PARF_MHI_MSTR_AXI_CLK_EN        (1u << 1)
-#define HOUJI_PARF_MHI_BYPASS                 (1u << 4)
-#define HOUJI_PARF_LTSSM_EN                   (1u << 8)
-#define HOUJI_PARF_LTSSM_STATE_MASK           0x3fu
-#define HOUJI_PARF_LTSSM_L0                   0x11u
-#define HOUJI_PARF_DEVICE_TYPE_RC             0x4u
+#define HOUJI_PARF_SYS_CTRL_L1_CLK_RMV_DIS      (1u << 1)
+#define HOUJI_PARF_SYS_CTRL_L23_CLK_RMV_DIS     (1u << 2)
+#define HOUJI_PARF_SYS_CTRL_AUX_PWR_DET         (1u << 4)
+#define HOUJI_PARF_SYS_CTRL_CORE_CLK_CGC_DIS    (1u << 6)
+#define HOUJI_PARF_SYS_CTRL_MSTR_ACLK_CGC_DIS   (1u << 10)
+#define HOUJI_PARF_SYS_CTRL_SLV_ACLK_CGC_DIS    (1u << 11)
+#define HOUJI_PARF_SYS_CTRL_MST_WAKEUP_EN       (1u << 13)
+#define HOUJI_PARF_SYS_CTRL_SLV_WAKEUP_EN       (1u << 14)
+#define HOUJI_PARF_SYS_CTRL_MAC_PHY_PD_MUX_EN   (1u << 29)
+#define HOUJI_PARF_PM_CTRL_REQ_NOT_ENTR_L1      (1u << 5)
+#define HOUJI_PARF_PHY_CTRL_TEST_PWR_DOWN       (1u << 0)
+#define HOUJI_PARF_PHY_REFCLK_USE_PAD           (1u << 12)
+#define HOUJI_PARF_PHY_REFCLK_SSP_EN            (1u << 16)
+#define HOUJI_PARF_MHI_A7_AXI_CLK_EN            (1u << 0)
+#define HOUJI_PARF_MHI_MSTR_AXI_CLK_EN          (1u << 1)
+#define HOUJI_PARF_MHI_BYPASS                   (1u << 4)
+#define HOUJI_PARF_LTSSM_EN                     (1u << 8)
+#define HOUJI_PARF_LTSSM_STATE_MASK             0x3fu
+#define HOUJI_PARF_LTSSM_L0                     0x11u
+#define HOUJI_PARF_DEVICE_TYPE_RC               0x4u
 
 /* ELBI / DWC DBI offsets */
 #define HOUJI_ELBI_SYS_CTRL         0x0000u
@@ -111,6 +114,7 @@ extern "C" {
 #define HOUJI_DBI_LINK_WIDTH_SPEED  0x080cu
 #define HOUJI_DBI_MISC_CONTROL_1    0x08bcu
 #define HOUJI_DBI_RO_WR_EN          (1u << 0)
+#define HOUJI_DBI_AUX_CLK_FREQ      0x0b40u
 
 /* Unrolled iATU outbound region layout (stride 0x200) */
 #define HOUJI_IATU_OUTBOUND_STRIDE  0x0200u
@@ -125,13 +129,18 @@ extern "C" {
 #define HOUJI_IATU_TYPE_CFG0        0x0004u
 #define HOUJI_IATU_ENABLE           0x80000000u
 
-/* QMP PHY status / reset / power-down offsets from houji.dtb */
-#define HOUJI_PHY_COM_C_READY_STTS  0x01ccu
+/* QMP v6.20 PHY status / reset / power-down offsets from houji.dtb */
+#define HOUJI_PHY_COM_C_READY_STTS  0x01f8u
 #define HOUJI_PHY_SW_RESET          0x0200u
 #define HOUJI_PHY_PCS_STATUS        0x0214u
+#define HOUJI_PHY_PCS_STATUS2       0x0218u
 #define HOUJI_PHY_STATUS_BIT        (1u << 6)
 #define HOUJI_PHY_POWER_DOWN_CTRL   0x0240u
 #define HOUJI_PHY_START_CTRL        0x0244u
+
+/* Verified ClockDxe.efi GCC PCIe0 read-only diagnostic offsets (base 0x0016b000) */
+#define HOUJI_GCC_PCIE0_PIPE_CBCR_OFF   0x0048u
+#define HOUJI_GCC_PCIE0_PIPE_MUXR_OFF   0x0070u
 
 /* Read-only MHI register offsets inside WCN7850 BAR0 */
 #define HOUJI_MHI_REGLEN_OFF        0x0100u
