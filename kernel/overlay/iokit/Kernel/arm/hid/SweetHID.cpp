@@ -31,6 +31,11 @@
 
 extern "C" uint64_t mach_absolute_time(void);
 
+class SweetHIDButtons;
+static SweetHIDButtons *gSweetButtons;
+static unsigned gSweetButtonClients;
+static unsigned gSweetButtonDispatched;
+
 /* One open client: the user client and its event callback. */
 class IOHIDEventServiceClient : public OSObject {
 	OSDeclareDefaultStructors(IOHIDEventServiceClient);
@@ -154,6 +159,9 @@ IOHIDEventService::handleOpen(IOService *client, IOOptionBits options __unused, 
 		if (next && next->setObject(data)) {
 			_clients->release();
 			_clients = next;
+			if ((const void *)this == (const void *)gSweetButtons) {
+				__atomic_store_n(&gSweetButtonClients, _clients->getCount(), __ATOMIC_RELAXED);
+			}
 			ok = true;
 		} else {
 			OSSafeReleaseNULL(next);
@@ -177,6 +185,9 @@ IOHIDEventService::handleClose(IOService *client, IOOptionBits options __unused)
 		}
 		_clients->release();
 		_clients = next;
+		if ((const void *)this == (const void *)gSweetButtons) {
+			__atomic_store_n(&gSweetButtonClients, _clients->getCount(), __ATOMIC_RELAXED);
+		}
 	}
 	IOLockUnlock(_clientLock);
 }
@@ -368,7 +379,6 @@ private:
 };
 OSDefineMetaClassAndStructors(SweetHIDTouch, IOHIDEventService);
 
-static SweetHIDButtons *gSweetButtons;
 static SweetHIDTouch *gSweetTouch;
 
 bool
@@ -383,7 +393,7 @@ SweetHIDButtons::start(IOService *provider)
 			fTest->setTimeoutMS(fTestSecs * 1000);
 		}
 	}
-	gSweetButtons = this;
+	__atomic_store_n(&gSweetButtons, this, __ATOMIC_RELEASE);
 	registerService();
 	IOLog("SWEET HID: buttons registered (test every %u s)\n", fTestSecs);
 	return true;
@@ -398,6 +408,7 @@ SweetHIDButtons::key(UInt32 usage, bool down)
 		IOLog("SWEET HID: key 0x%x %s (%u clients)\n", (unsigned)usage, down ? "down" : "up",
 		    _clients ? _clients->getCount() : 0);
 		dispatchEvent(event);
+		__atomic_add_fetch(&gSweetButtonDispatched, 1u, __ATOMIC_RELAXED);
 		event->release();
 	}
 }
@@ -538,6 +549,14 @@ sweet_hid_key(int key, int down)
 	if (gSweetButtons && key >= 0 && key < (int)(sizeof(usages) / sizeof(usages[0]))) {
 		gSweetButtons->key(usages[key], down != 0);
 	}
+}
+
+extern "C" void
+sweet_hid_buttons_status(unsigned *registered, unsigned *clients, unsigned *dispatched)
+{
+	if (registered) *registered = __atomic_load_n(&gSweetButtons, __ATOMIC_ACQUIRE) ? 1u : 0u;
+	if (clients) *clients = __atomic_load_n(&gSweetButtonClients, __ATOMIC_RELAXED);
+	if (dispatched) *dispatched = __atomic_load_n(&gSweetButtonDispatched, __ATOMIC_RELAXED);
 }
 
 extern "C" void houji_dvfs_touch(void);

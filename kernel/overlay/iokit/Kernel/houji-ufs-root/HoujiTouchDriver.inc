@@ -195,6 +195,7 @@ static void houjiTouchStart(void) {
   if(kr==KERN_SUCCESS)thread_deallocate(thread);else ht.error=unsigned(kr);
 }
 extern "C" void houji_touch_driver_report(void) {
+  if(hk.started)houjiKeysReport();
   if(!ht.started)return;
   IOLog("HOUJI TOUCH: stage=%u error=%u frames=%u events=%u irq-polls=%u device-write=%u host-write=%u config=%u last-header=%08x discarded=%u; GPIO SPI, no DMA or firmware writes\n",
     __atomic_load_n(&ht.stage,__ATOMIC_ACQUIRE),__atomic_load_n(&ht.error,__ATOMIC_ACQUIRE),
