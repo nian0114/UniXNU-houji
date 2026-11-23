@@ -819,6 +819,7 @@ ReadHeaders (VOID)
 }
 
 #include "TouchHandoff.h"
+#include "WifiHandoff.h"
 #include "GpuHandoff.h"
 #include "GpuPowerOnlyHandoff.h"
 #include "GpuPowerHandoffGuid.h"
@@ -878,15 +879,15 @@ BootNativeUfsProbe (EFI_HANDLE ImageHandle)
   ZeroMem (&Request, sizeof (Request));
   Request.Volume = Self->DeviceHandle;
   Request.KernelPath = L"\\Payloads\\kernel.macho";
-  CONST CHAR16 *BaseBootArgs = L"-v sweetfb_hz=120 serial=1 debug=0x14e keepsyms=1 cpus=8 wfi=1 houji_smp=1 houji_smp_probe=1 houji_native_root=1 houji_ufs_log=1 houji_return_recovery=1 houji_checkpoint_stop=0 sweetsample=- gpool=256 houji_gpu_external_canary_probe=1 houji_gpu_external_nc_probe=1 houji_gpu_fw_mem_probe=1 houji_gpu_scm_probe=1 houji_gpu_stock_probe=8 houji_panic_recovery=1 sweetfb_noconsole=1 houji_fb_gpu_sync=1 houji_fb_gpu_cache=1 houji_dvfs=3 gpu_max_mhz=903 houji_epoch=1792839100 msgbuf=65536 rd=md0 rootrw=1 houji_gpu_runtime=5 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 houji_touch_probe=1";
+  CONST CHAR16 *BaseBootArgs = L"-v sweetfb_hz=120 serial=1 debug=0x14e keepsyms=1 cpus=8 wfi=1 houji_smp=1 houji_smp_probe=1 houji_native_root=1 houji_ufs_log=1 houji_return_recovery=1 sweetsample=- gpool=256 houji_gpu_external_canary_probe=1 houji_gpu_external_nc_probe=1 houji_gpu_fw_mem_probe=1 houji_gpu_scm_probe=1 houji_gpu_stock_probe=8 houji_panic_recovery=1 sweetfb_noconsole=1 houji_fb_gpu_sync=1 houji_fb_gpu_cache=1 houji_dvfs=3 gpu_max_mhz=903 houji_epoch=1792839100 msgbuf=65536 rd=md0 rootrw=1 houji_gpu_runtime=5 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 houji_touch_probe=1";
   CHAR16 BootArgs[608];
   // Darwin 22's command line includes its trailing NUL in this budget.
-  // Never silently truncate the final touch handoff when adding options.
-  if (StrLen(BaseBootArgs) + StrLen(L" houji_touch=1") >= ARRAY_SIZE(BootArgs)) {
+  // Never silently truncate the final touch/wifi handoff flags when adding options.
+  if (StrLen(BaseBootArgs) + StrLen(L" houji_touch=1 houji_wifi=1") >= ARRAY_SIZE(BootArgs)) {
     Print(L"HOUJI: boot arguments exceed the Darwin 22 command-line budget\n");
     return EFI_BAD_BUFFER_SIZE;
   }
-  UnicodeSPrint(BootArgs,sizeof(BootArgs),L"%s houji_touch=%u",BaseBootArgs,mTouchHandoffReady?1:0);
+  UnicodeSPrint(BootArgs,sizeof(BootArgs),L"%s houji_touch=%u houji_wifi=%u",BaseBootArgs,mTouchHandoffReady?1:0,mWifiHandoffReady?1:0);
   Request.BootArgs=BootArgs;
   Print (L"HOUJI NATIVE UFS r241: checkpoint saved; entering XNU fixed-file log trial\n");
   return Loader->Boot (Loader, &Request);
@@ -1057,6 +1058,9 @@ Finished:
       // Touch handoff is also required when GPU initialization belongs to XNU.
       EFI_STATUS TouchStatus=PrepareTouchHandoff();
       Print (L"HOUJI TOUCH UEFI: preparation=%r; driver enabled=%u\n",TouchStatus,mTouchHandoffReady);
+      // Wi-Fi Stage 1 power/clock handoff is best-effort and never blocks desktop boot.
+      EFI_STATUS WifiStatus=PrepareWifiHandoff();
+      Print (L"HOUJI WIFI UEFI: preparation=%r; driver enabled=%u\n",WifiStatus,mWifiHandoffReady);
       Status=ProbeCheckpoint(mTouchHandoffReady?"touch-handoff-enabled-before-XNU":"touch-handoff-not-ready-before-XNU");
       if(EFI_ERROR(TouchStatus) || !mTouchHandoffReady || EFI_ERROR(Status)) {
         (VOID)GpuTrialReturnRecovery("touch-handoff-not-ready");
