@@ -2267,7 +2267,7 @@
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/UfsHandoffProbe.h": "5fb3ba51f8f44d1e8ce8c3eb342a3e8a49717b57a04daa6c08cd25643d93025c",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/UfsLogWriteGuard.h": "1d2299c32cff6273808206a5c71b598c75b94a4272332bacd43179c41b7efe6a",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/UfsReadyRetry.h": "af910f3c0f8e0b196e55cf6f23396d7d0ac1b6818ad75ada4c86fb856925dd8f",
-    "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/WifiHandoff.h": "eabc7c36d7bd13cda02e0eeade5631528e726ad62c7601b976612ceee02d9ad8",
+    "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/WifiHandoff.h": "7b76af73193ea8786f46c01a34766da9c1898e3588d2a42e4f104076108415af",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/gen7-register-facts.json": "62ac32a9a768be86af8b98915227cac92886398fcbe53ccdd994748a17e4b7fb",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/vendor/Ace5Gmu/giulia_gpu_firmware.h": "eae640bc4b2656ce1b843860fd47e19c5d94da4e2c2061431d0a36678f5c8c2b",
     "uefi/overlay/Platforms/Xiaomi/houjiPkg/Application/HoujiStorageProbe/vendor/Ace5Gmu/giulia_gpu_hfi.h": "26683bb33cb70fc05a877f2cff41956e46e5dddc87ad94a88e091c4b34f323ce",

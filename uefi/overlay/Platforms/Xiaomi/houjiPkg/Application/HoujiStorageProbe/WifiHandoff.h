@@ -54,7 +54,7 @@ PrepareWifiHandoff (VOID)
   CONST CHAR8 *Clocks[12] = {
     "gcc_cnoc_pcie_sf_axi_clk",
     "gcc_ddrss_pcie_sf_qtb_clk",
-    "gcc_ddrss_pcie_sf_tbu_clk",
+    "gcc_hlos1_vote_aggre_noc_mmu_pcie_qtb_clk",
     "gcc_aggre_noc_pcie_axi_clk",
     "gcc_cfg_noc_pcie_anoc_ahb_clk",
     "gcc_pcie_0_cfg_ahb_clk",
@@ -152,13 +152,17 @@ PrepareWifiHandoff (VOID)
     }
   }
 
+  EFI_STATUS ClockLookupStatus = EFI_SUCCESS;
   for (UINTN I = 0; I < ARRAY_SIZE (Clocks); I++) {
     ClockIds[I] = 0;
     Status = Clock->GetClockID (Clock, Clocks[I], &ClockIds[I]);
     Print (L"HOUJI WIFI UEFI: clock %a id=%lx lookup=%r\n", Clocks[I], ClockIds[I], Status);
-    if (EFI_ERROR (Status)) {
-      return Status;
+    if (EFI_ERROR (Status) && !EFI_ERROR (ClockLookupStatus)) {
+      ClockLookupStatus = Status;
     }
+  }
+  if (EFI_ERROR (ClockLookupStatus)) {
+    return ClockLookupStatus;
   }
 
   Status = Clock->GetClockID (Clock, "gcc_pcie_0_pipe_clk", &PipeClockId);
