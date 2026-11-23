@@ -65,6 +65,7 @@ CHECKS = (
     'tcc-media-compatibility.py',
     'metal-command-dictionary.py',
     'statusbar-geometry.py',
+    'spmi-keys.py',
 )
 
 
