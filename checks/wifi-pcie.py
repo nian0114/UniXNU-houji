@@ -84,10 +84,14 @@ int main(void) {
   /* 4. RC Memory Base/Limit encoding. */
   assert(houji_wifi_rc_mem_base_limit(HOUJI_PCIE0_MMIO_BASE, HOUJI_PCIE0_MMIO_LIMIT) == 0x63f06030u);
 
-  /* 5. Link status decode (LTSSM L0 + XMLH_LINK_UP + Gen3 x2). */
+  /* 5. Link status decode (DWC DEBUG0/DEBUG1, LNKSTA DLLLA, and legacy PARF/ELBI). */
   houji_pcie_link_info li = houji_wifi_decode_link(0x00000111u, 0x00000400u, (0x0023u << 16));
   assert(li.ltssm_state == 0x11u && li.xmlh_link_up == 1u && li.in_l0 == 1u);
   assert(li.link_speed == 3u && li.link_width == 2u);
+  li = houji_wifi_decode_link_dwc(0x00000101u, 0x00001001u, (0x2023u << 16), 0x00000011u, 0x00000010u);
+  assert(li.ltssm_state == 0x11u && li.xmlh_link_up == 1u && li.in_l0 == 1u);
+  li = houji_wifi_decode_link_dwc(0x00000101u, 0x00001001u, (0x0011u << 16), 0x00000001u, 0x20000010u);
+  assert(li.in_l0 == 0u); /* Training bit 29 suppresses DEBUG1_LINK_UP */
   li = houji_wifi_decode_link(0x00000102u, 0x00000000u, 0u);
   assert(li.in_l0 == 0u && li.xmlh_link_up == 0u && li.ltssm_state == 0x02u);
 

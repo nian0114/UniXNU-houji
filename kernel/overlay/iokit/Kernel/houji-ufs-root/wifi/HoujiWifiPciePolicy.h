@@ -89,6 +89,8 @@ extern "C" {
 #define HOUJI_PARF_DEVICE_TYPE_RC             0x4u
 
 /* ELBI / DWC DBI offsets */
+#define HOUJI_ELBI_SYS_CTRL         0x0000u
+#define HOUJI_ELBI_LT_ENABLE        (1u << 0)
 #define HOUJI_ELBI_SYS_STTS         0x0008u
 #define HOUJI_ELBI_XMLH_LINK_UP     (1u << 10)
 #define HOUJI_DBI_VENDOR_DEVICE     0x0000u
@@ -99,7 +101,12 @@ extern "C" {
 #define HOUJI_DBI_PREF_BASE_LIMIT   0x0024u
 #define HOUJI_DBI_EXP_LINK_CAP      0x007cu
 #define HOUJI_DBI_EXP_LINK_CTRL_STS 0x0080u
+#define HOUJI_DBI_LNKSTA_DLLLA      (1u << 29)
 #define HOUJI_DBI_PORT_LINK_CTRL    0x0710u
+#define HOUJI_DBI_PORT_DEBUG0       0x0728u
+#define HOUJI_DBI_PORT_DEBUG1       0x072cu
+#define HOUJI_DBI_DEBUG1_LINK_UP    (1u << 4)
+#define HOUJI_DBI_DEBUG1_TRAINING   (1u << 29)
 #define HOUJI_DBI_LINK_WIDTH_SPEED  0x080cu
 #define HOUJI_DBI_MISC_CONTROL_1    0x08bcu
 #define HOUJI_DBI_RO_WR_EN          (1u << 0)
@@ -197,18 +204,32 @@ static inline uint32_t houji_wifi_cfg0_target(uint32_t bus, uint32_t dev, uint32
   return ((bus & 0xffu) << 24) | ((dev & 0x1fu) << 19) | ((fn & 0x7u) << 16);
 }
 
-/* Decode PCIe link state from PARF_LTSSM, ELBI_SYS_STTS, and DBI LINK_CTRL_STS (0x80). */
-static inline houji_pcie_link_info houji_wifi_decode_link(uint32_t parf_ltssm,
-                                                          uint32_t elbi_stts,
-                                                          uint32_t dbi_link_ctrl_sts) {
+/* Decode PCIe link state from DWC DEBUG0/DEBUG1/LNKSTA, PARF_LTSSM, and ELBI_SYS_STTS. */
+static inline houji_pcie_link_info houji_wifi_decode_link_dwc(uint32_t parf_ltssm,
+                                                              uint32_t elbi_stts,
+                                                              uint32_t dbi_link_ctrl_sts,
+                                                              uint32_t dbg0,
+                                                              uint32_t dbg1) {
   houji_pcie_link_info info;
   uint32_t link_sts = (dbi_link_ctrl_sts >> 16) & 0xffffu;
-  info.ltssm_state  = parf_ltssm & HOUJI_PARF_LTSSM_STATE_MASK;
-  info.xmlh_link_up = (elbi_stts & HOUJI_ELBI_XMLH_LINK_UP) != 0u ? 1u : 0u;
-  info.in_l0        = (info.xmlh_link_up && info.ltssm_state == HOUJI_PARF_LTSSM_L0) ? 1u : 0u;
+  uint32_t dwc_ltssm = dbg0 & HOUJI_PARF_LTSSM_STATE_MASK;
+  unsigned dwc_up = ((dbg1 & HOUJI_DBI_DEBUG1_LINK_UP) != 0u &&
+                     (dbg1 & HOUJI_DBI_DEBUG1_TRAINING) == 0u) ? 1u : 0u;
+  unsigned dllla = (dbi_link_ctrl_sts & HOUJI_DBI_LNKSTA_DLLLA) != 0u ? 1u : 0u;
+  unsigned legacy_up = ((elbi_stts & HOUJI_ELBI_XMLH_LINK_UP) != 0u &&
+                        (parf_ltssm & HOUJI_PARF_LTSSM_STATE_MASK) == HOUJI_PARF_LTSSM_L0) ? 1u : 0u;
+  info.ltssm_state  = (dbg0 != 0u) ? dwc_ltssm : (parf_ltssm & HOUJI_PARF_LTSSM_STATE_MASK);
+  info.xmlh_link_up = (dwc_up || dllla || (elbi_stts & HOUJI_ELBI_XMLH_LINK_UP) != 0u) ? 1u : 0u;
+  info.in_l0        = (dwc_up || dllla || legacy_up) ? 1u : 0u;
   info.link_speed   = link_sts & 0xfu;
   info.link_width   = (link_sts >> 4) & 0x3fu;
   return info;
+}
+
+static inline houji_pcie_link_info houji_wifi_decode_link(uint32_t parf_ltssm,
+                                                          uint32_t elbi_stts,
+                                                          uint32_t dbi_link_ctrl_sts) {
+  return houji_wifi_decode_link_dwc(parf_ltssm, elbi_stts, dbi_link_ctrl_sts, 0u, 0u);
 }
 
 /* Validate EP Vendor/Device ID word read from ECAM offset 0x00. */

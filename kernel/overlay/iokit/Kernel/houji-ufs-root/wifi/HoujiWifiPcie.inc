@@ -15,7 +15,7 @@ static struct {
   bool started;
   uint32_t stage, error;
   uint32_t phyStatus, phyReady;
-  uint32_t parfSysCtrl, parfLtssm, maxLtssm, parfPmStts, elbiStts, dbiLinkSts;
+  uint32_t parfSysCtrl, parfLtssm, maxLtssm, parfPmStts, elbiStts, dbiLinkSts, dbiDbg0, dbiDbg1;
   uint32_t gpioInMask, clkreqOrigCfg, tcsrClkRef;
   uint32_t rcId, epId, epClass, epSubsys;
   uint32_t bar0Base, bar0Size, bar0Is64;
@@ -234,12 +234,20 @@ static uint32_t hwWifiRun(void) {
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_LTSSM, ltssm | HOUJI_PARF_LTSSM_EN);
 
   houji_pcie_link_info linkInfo = {0};
-  uint32_t elbiSt = 0, dbiLink = 0, maxLtssm = 0;
+  uint32_t elbiSt = 0, dbiLink = 0, dbg0 = 0, dbg1 = 0, maxLtssm = 0;
   for (unsigned ms = 0; ms < 500; ms++) {
+    if (ms == 200) {
+      // Fallback: also assert ELBI_SYS_CTRL LT_ENABLE in case this silicon requires both.
+      uint32_t elbiCtrl = hwWifiRead32(hwWifi.dbi, HOUJI_PCIE0_ELBI_OFFSET + HOUJI_ELBI_SYS_CTRL);
+      hwWifiWrite32(hwWifi.dbi, HOUJI_PCIE0_ELBI_OFFSET + HOUJI_ELBI_SYS_CTRL,
+                    elbiCtrl | HOUJI_ELBI_LT_ENABLE);
+    }
     ltssm   = hwWifiRead32(hwWifi.parf, HOUJI_PARF_LTSSM);
     elbiSt  = hwWifiRead32(hwWifi.dbi, HOUJI_PCIE0_ELBI_OFFSET + HOUJI_ELBI_SYS_STTS);
     dbiLink = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_EXP_LINK_CTRL_STS);
-    linkInfo = houji_wifi_decode_link(ltssm, elbiSt, dbiLink);
+    dbg0    = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_PORT_DEBUG0);
+    dbg1    = hwWifiRead32(hwWifi.dbi, HOUJI_DBI_PORT_DEBUG1);
+    linkInfo = houji_wifi_decode_link_dwc(ltssm, elbiSt, dbiLink, dbg0, dbg1);
     if (linkInfo.ltssm_state > maxLtssm) maxLtssm = linkInfo.ltssm_state;
     if (linkInfo.in_l0) break;
     hwWifiSleepMs(1);
@@ -249,6 +257,8 @@ static uint32_t hwWifiRun(void) {
   __atomic_store_n(&hwWifi.parfPmStts, hwWifiRead32(hwWifi.parf, HOUJI_PARF_PM_STTS), __ATOMIC_RELAXED);
   __atomic_store_n(&hwWifi.elbiStts, elbiSt, __ATOMIC_RELAXED);
   __atomic_store_n(&hwWifi.dbiLinkSts, dbiLink, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.dbiDbg0, dbg0, __ATOMIC_RELAXED);
+  __atomic_store_n(&hwWifi.dbiDbg1, dbg1, __ATOMIC_RELAXED);
   __atomic_store_n(&hwWifi.gpioInMask, hwWifiSampleGpioIn(), __ATOMIC_RELAXED);
   if (!linkInfo.in_l0) return 42u;
 
@@ -343,10 +353,12 @@ static void houjiWifiPcieStart(void) {
 
 extern "C" void houji_wifi_pcie_snapshot(void) {
   if (!hwWifi.started) return;
-  houji_pcie_link_info link = houji_wifi_decode_link(
+  houji_pcie_link_info link = houji_wifi_decode_link_dwc(
     __atomic_load_n(&hwWifi.parfLtssm, __ATOMIC_RELAXED),
     __atomic_load_n(&hwWifi.elbiStts, __ATOMIC_RELAXED),
-    __atomic_load_n(&hwWifi.dbiLinkSts, __ATOMIC_RELAXED));
+    __atomic_load_n(&hwWifi.dbiLinkSts, __ATOMIC_RELAXED),
+    __atomic_load_n(&hwWifi.dbiDbg0, __ATOMIC_RELAXED),
+    __atomic_load_n(&hwWifi.dbiDbg1, __ATOMIC_RELAXED));
   IOLog("HOUJI WIFI PCIE: stage=%u err=%u phy-ready=%u phy=%08x ltssm=%02x(max=%02x) link=Gen%u/x%u rc=%08x id=%08x bar0=%08x/%x mhi-ver=%08x mhi-st=%08x\n",
         __atomic_load_n(&hwWifi.stage, __ATOMIC_ACQUIRE),
         __atomic_load_n(&hwWifi.error, __ATOMIC_ACQUIRE),
@@ -362,11 +374,14 @@ extern "C" void houji_wifi_pcie_snapshot(void) {
         __atomic_load_n(&hwWifi.mhiVer, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.mhiStatus, __ATOMIC_RELAXED));
   uint32_t gm = __atomic_load_n(&hwWifi.gpioInMask, __ATOMIC_RELAXED);
-  IOLog("HOUJI WIFI DIAG: gpio(16=%u 94=%u 95=%u 96=%u 18=%u 19=%u) clkreq-orig=%08x tcsr-ref=%08x pm-stts=%08x elbi=%08x\n",
+  IOLog("HOUJI WIFI DIAG: gpio(16=%u 94=%u 95=%u 96=%u 18=%u 19=%u) tcsr=%08x parf-ltssm=%08x pm=%08x elbi=%08x dbi-lnk=%08x dbg0=%08x dbg1=%08x\n",
         (gm >> 0) & 1u, (gm >> 1) & 1u, (gm >> 2) & 1u,
         (gm >> 3) & 1u, (gm >> 4) & 1u, (gm >> 5) & 1u,
-        __atomic_load_n(&hwWifi.clkreqOrigCfg, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.tcsrClkRef, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.parfLtssm, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.parfPmStts, __ATOMIC_RELAXED),
-        __atomic_load_n(&hwWifi.elbiStts, __ATOMIC_RELAXED));
+        __atomic_load_n(&hwWifi.elbiStts, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.dbiLinkSts, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.dbiDbg0, __ATOMIC_RELAXED),
+        __atomic_load_n(&hwWifi.dbiDbg1, __ATOMIC_RELAXED));
 }
