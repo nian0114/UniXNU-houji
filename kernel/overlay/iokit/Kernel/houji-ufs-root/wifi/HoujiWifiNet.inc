@@ -573,7 +573,10 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
         int res = nw_wifi_scan_frequencies((ssid && ssidLen && ssidLen <= 32u) ? ssid : nullptr,
                                            (ssid && ssidLen <= 32u) ? ssidLen : 0u,
                                            freqs ? mhz : nullptr, freqs);
-        if (res) { __atomic_store_n(&gHwScanning, 0u, __ATOMIC_RELEASE); return ENETDOWN; }
+        if (res) {
+          if (!merged) __atomic_store_n(&gHwScanning, 0u, __ATOMIC_RELEASE);
+          return res == -EBUSY ? EBUSY : ENETDOWN;
+        }
         if (!merged) houji_wifi_air_mark(&gHwAir, mhz, freqs, now);
         hwWifiWakeWorker();
         return 0;

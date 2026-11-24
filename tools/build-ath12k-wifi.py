@@ -34,13 +34,10 @@ def find_llvm_bin():
     return None
 
 
-def stage_regulatory_sources(module, out):
-    patch = Path(__file__).resolve().parents[1] / 'kernel/patches/ath12k-wcn7850-regulatory.patch'
-    source = module / 'out/ath12k-src'
-    overrides = out / 'ath12k-regulatory'
-    names = ('mac.c', 'reg.c')
+def stage_patched_sources(source, overrides, patch_name, names):
+    patch = Path(__file__).resolve().parents[1] / 'kernel/patches' / patch_name
     overrides.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='ath12k-patch-', dir=out) as directory:
+    with tempfile.TemporaryDirectory(prefix='ath12k-patch-', dir=overrides.parent) as directory:
         temporary = Path(directory)
         for name in names:
             shutil.copyfile(source / name, temporary / name)
@@ -66,7 +63,10 @@ def main():
     out = args.out.resolve()
     raw = out / 'raw'
     raw.mkdir(parents=True, exist_ok=True)
-    regulatory_sources = stage_regulatory_sources(module, out)
+    regulatory_sources = stage_patched_sources(module / 'out/ath12k-src', out / 'ath12k-regulatory',
+                                               'ath12k-wcn7850-regulatory.patch', ('mac.c', 'reg.c'))
+    scan_source = stage_patched_sources(module / 'src', out / 'ath12k-directed-scan',
+                                        'ath12k-defer-directed-scan.patch', ('nw_mainline.c',))['nw_mainline.c']
 
     clang = subprocess.run(['xcrun', '-f', 'clang'], check=True, capture_output=True, text=True).stdout.strip()
     libtool = subprocess.run(['xcrun', '-f', 'libtool'], check=True, capture_output=True, text=True).stdout.strip()
@@ -113,6 +113,8 @@ def main():
             src = module / 'out' / tree / name
         elif tree == 'generated':
             src = module / 'out' / name
+        elif name == 'src/nw_mainline.c':
+            src = scan_source
         else:
             src = module / name
         obj = out / (('w7_' if '/wifi7/' in str(src) else tree + '_' if tree else '') + src.stem + '.o')

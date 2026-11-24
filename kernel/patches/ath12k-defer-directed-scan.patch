@@ -1,0 +1,150 @@
+--- a/nw_mainline.c
++++ b/nw_mainline.c
+@@ -38,7 +38,7 @@
+ }
+ struct ui_request { unsigned operation, frequency; u8 ssid[32], ssid_length, bssid[6], has_bssid; char password[64]; u8 password_length, enabled;
+                    u32 scan_frequencies[NW_WIFI_SCAN_FREQUENCIES_MAX]; u8 scan_frequency_count; };
+-static struct ui_request ui;
++static struct ui_request ui, scan_current, scan_queued;
+ static struct { bool pending, enabled; unsigned revision; } radio;
+ static u64 scan_deadline;
+ static bool scan_waiting;
+@@ -49,6 +49,32 @@
+ static unsigned tx_count, tx_bytes, epoch;
+ static bool stopping;
+ static bool scan_ack_pending;
++
++/* Complete the UI scan only after a directed request waiting behind it runs. */
++static bool finish_scan_locked(void) {
++  if (scan_queued.operation && (!ui.operation || ui.operation == NW_CONTROL_SCAN_REQUEST)) {
++    ui = scan_queued;
++    scan_current = scan_queued;
++    memset(&scan_queued, 0, sizeof(scan_queued));
++    scan_deadline = lx_now_ms() + 12000;
++    return false;
++  }
++  scan_waiting = false;
++  if (status.state == NW_STA_SCANNING) status.state = NW_STA_IDLE;
++  return true;
++}
++
++static void cancel_scan_locked(void) {
++  memset(&scan_queued, 0, sizeof(scan_queued));
++  if (scan_waiting) { scan_waiting = false; scan_ack_pending = true; }
++}
++
++static bool same_scan(const struct ui_request *a, const struct ui_request *b) {
++  return a->ssid_length == b->ssid_length && a->scan_frequency_count == b->scan_frequency_count &&
++    !memcmp(a->ssid, b->ssid, a->ssid_length) && !memcmp(a->scan_frequencies, b->scan_frequencies,
++                                                        a->scan_frequency_count * sizeof(u32));
++}
++
+ static struct work_struct transmit_work;
+ static void transmit(void);
+ static void transmit_run(struct work_struct *work) {
+@@ -131,8 +157,12 @@
+   uint32_t value; size_t length;
+   if (operation == NW_CONTROL_SCAN_DONE) {
+     if (dev) scan_snapshot(dev);
+-    lx_shared_spin_lock(&boundary_lock); scan_waiting = false; if (status.state == NW_STA_SCANNING) status.state = NW_STA_IDLE; lx_shared_spin_unlock(&boundary_lock);
+-    nw_wifi_stats.scans++; if (nw_events.scan_done) nw_events.scan_done(); return;
++    lx_shared_spin_lock(&boundary_lock);
++    bool finished = finish_scan_locked();
++    lx_shared_spin_unlock(&boundary_lock);
++    nw_wifi_stats.scans++;
++    if (finished && nw_events.scan_done) nw_events.scan_done();
++    return;
+   }
+   lx_shared_spin_lock(&boundary_lock);
+   if (radio.pending || ui.operation == NW_CONTROL_JOIN_REQUEST || ui.operation == NW_CONTROL_DISCONNECT_REQUEST) {
+@@ -194,8 +224,10 @@
+   }
+   case NW_CONTROL_REPORT_RESULT:
+     if (!nw_control_get_u32(view, NW_CONTROL_ATTR_REASON, &value) && value == NW_CONTROL_SCAN_REQUEST) {
+-      scan_waiting = false; if (status.state == NW_STA_SCANNING) status.state = NW_STA_IDLE;
+-      lx_shared_spin_unlock(&boundary_lock); if (nw_events.scan_done) nw_events.scan_done(); return;
++      bool finished = finish_scan_locked();
++      lx_shared_spin_unlock(&boundary_lock);
++      if (finished && nw_events.scan_done) nw_events.scan_done();
++      return;
+     }
+     if (result) {
+       join_waiting = false;
+@@ -210,6 +242,7 @@
+ int nw_mainline_init(void) {
+   spin_lock_init(&boundary_lock); memset(&status, 0, sizeof(status)); stopping = false;
+   memzero_explicit(&ui, sizeof(ui)); bss_count = rx_drops = 0; scan_ack_pending = false;
++  memset(&scan_queued, 0, sizeof(scan_queued));
+   memset(&radio, 0, sizeof(radio)); radio.enabled = true; scan_waiting = false; scan_deadline = 0;
+   join_waiting = false; join_deadline = 0; wake_count = 0; lead_before = clock_lead(lx_now_ms());
+   INIT_WORK(&transmit_work, transmit_run);
+@@ -223,13 +256,28 @@
+ int nw_wifi_scan_frequencies(const u8 *ssid, size_t length, const u32 *mhz, size_t count) {
+   if (length > 32 || (length && !ssid) || count > NW_WIFI_SCAN_FREQUENCIES_MAX || (count && !mhz)) return -EINVAL;
+   for (size_t i = 0; i < count; i++) if (mhz[i] < 2400 || mhz[i] > 7125) return -EINVAL;
++  struct ui_request request;
++  memset(&request, 0, sizeof(request));
++  request.operation = NW_CONTROL_SCAN_REQUEST;
++  request.ssid_length = length;
++  if (length) memcpy(request.ssid, ssid, length);
++  request.scan_frequency_count = count;
++  if (count) memcpy(request.scan_frequencies, mhz, count * sizeof(u32));
+   lx_shared_spin_lock(&boundary_lock);
+   if (stopping || !radio.enabled) { lx_shared_spin_unlock(&boundary_lock); return -ENETDOWN; }
+-  if (scan_waiting) { lx_shared_spin_unlock(&boundary_lock); return 0; } /* Coalesce duplicate UI scan requests. */
++  if (scan_waiting) {
++    int result = 0;
++    if (length && !same_scan(&request, &scan_current) &&
++        (!scan_queued.operation || !same_scan(&request, &scan_queued))) {
++      if (scan_queued.operation) result = -EBUSY;
++      else scan_queued = request;
++    }
++    lx_shared_spin_unlock(&boundary_lock);
++    return result;
++  }
+   if (!ui.operation || ui.operation == NW_CONTROL_SCAN_REQUEST) {
+-    memzero_explicit(&ui, sizeof(ui)); ui.operation = NW_CONTROL_SCAN_REQUEST;
+-    ui.ssid_length = length; if (length) memcpy(ui.ssid, ssid, length);
+-    ui.scan_frequency_count = count; for (size_t i = 0; i < count; i++) ui.scan_frequencies[i] = mhz[i];
++    ui = request;
++    scan_current = request;
+     scan_waiting = true; scan_deadline = lx_now_ms() + 12000;
+   } else scan_ack_pending = true;
+   lx_shared_spin_unlock(&boundary_lock); return 0;
+@@ -239,7 +287,7 @@
+       (password && password_length < 8) || (!password && password_length)) return -EINVAL;
+   lx_shared_spin_lock(&boundary_lock);
+   if (stopping || !radio.enabled) { lx_shared_spin_unlock(&boundary_lock); return -ENETDOWN; }
+-  if (scan_waiting) { scan_waiting = false; scan_ack_pending = true; }
++  cancel_scan_locked();
+   memzero_explicit(&ui, sizeof(ui)); ui.operation = NW_CONTROL_JOIN_REQUEST;
+   memcpy(ui.ssid, ssid, length); ui.ssid_length = length;
+   if (address) { ui.has_bssid = 1; memcpy(ui.bssid, address, ETH_ALEN); }
+@@ -260,14 +308,14 @@
+ void nw_wifi_disconnect(void) {
+   lx_shared_spin_lock(&boundary_lock); memzero_explicit(&ui, sizeof(ui)); ui.operation = NW_CONTROL_DISCONNECT_REQUEST;
+   join_waiting = false;
+-  if (scan_waiting) { scan_waiting = false; scan_ack_pending = true; }
++  cancel_scan_locked();
+   clear_connection(radio.enabled ? NW_STA_IDLE : NW_STA_OFF); epoch++; lx_shared_spin_unlock(&boundary_lock);
+ }
+ void nw_wifi_power(int enabled) {
+   lx_shared_spin_lock(&boundary_lock); memzero_explicit(&ui, sizeof(ui));
+   radio.pending = true; radio.enabled = !!enabled; radio.revision++;
+   join_waiting = false;
+-  if (scan_waiting) { scan_waiting = false; scan_ack_pending = true; }
++  cancel_scan_locked();
+   clear_connection(enabled ? NW_STA_IDLE : NW_STA_OFF); epoch++; lx_shared_spin_unlock(&boundary_lock);
+ }
+ int nw_wifi_bss_count(void) { lx_shared_spin_lock(&boundary_lock); unsigned count = bss_count; lx_shared_spin_unlock(&boundary_lock); return count; }
+@@ -382,9 +430,8 @@
+   struct ui_request pending;
+   lx_shared_spin_lock(&boundary_lock);
+   if (scan_waiting && lx_now_ms() >= scan_deadline) {
+-    scan_waiting = false; scan_ack_pending = true;
+     if (ui.operation == NW_CONTROL_SCAN_REQUEST) memzero_explicit(&ui, sizeof(ui));
+-    if (status.state == NW_STA_SCANNING) status.state = NW_STA_IDLE;
++    if (finish_scan_locked()) scan_ack_pending = true;
+   }
+   bool scan_ack = scan_ack_pending; scan_ack_pending = false;
+   pending = ui; bool power_changing = radio.pending; lx_shared_spin_unlock(&boundary_lock);
