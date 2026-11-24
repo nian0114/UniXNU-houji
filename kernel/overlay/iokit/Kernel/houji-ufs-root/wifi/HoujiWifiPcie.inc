@@ -78,6 +78,7 @@ static uint32_t hwWifiSampleGpioIn(void) {
 }
 
 #include "HoujiWifiMhi.inc"
+#include "HoujiWifiStack.inc"
 
 static uint32_t hwWifiRun(void) {
   // Stage 1: Map and validate TLMM GPIOs (WLAN_EN=16, PERST#=94, CLKREQ#=95, WAKE#=96)
@@ -387,8 +388,8 @@ static uint32_t hwWifiRun(void) {
   IOLog("HOUJI WIFI PCIE: stage=5 WCN7850 ready bar0=%08x size=%x 64b=%u mhi-len=%08x mhi-ver=%08x mhi-cfg=%08x mhi-st=%08x\n",
         barBase, barSize, barIs64, mhiRegLen, mhiVer, mhiCfg, mhiStatus);
 
-  // Stage 2: SMMU Stage-1, modem_a amss20.bin load, DWC MSI, chipPowerUp, and MHI BHI/BHIe boot.
-  return hwWifiRunStage2(barBase, barSize);
+  // Stage 3: SMMU 128 MiB Stage-1 + Ath12kWifi stack (chipPowerUp, MHI, QRTR/QMI, ath12k scan).
+  return hwWifiRunStack(barBase, barSize);
 }
 
 static void hwWifiThread(void *, wait_result_t) {
@@ -451,4 +452,5 @@ extern "C" void houji_wifi_pcie_snapshot(void) {
         __atomic_load_n(&hwWifi.dbiDbg0, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.dbiDbg1, __ATOMIC_RELAXED));
   hwWifiMhiSnapshot();
+  hwWifiStackSnapshot();
 }

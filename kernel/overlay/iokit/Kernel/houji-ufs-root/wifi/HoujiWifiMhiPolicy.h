@@ -23,9 +23,9 @@ extern "C" {
 #define HOUJI_WIFI_SID_WCN7850      0x1401u
 #define HOUJI_WIFI_SMMU_ASID        0x1401u
 
-/* Dedicated 32-bit IOVA window (disjoint from NULL and 0x60000000..0x63ffffff PCIe slave) */
+/* Dedicated 32-bit IOVA window (128 MiB for ath12k QMI host regions + rings; disjoint from 0x60000000..0x63ffffff) */
 #define HOUJI_WIFI_DMA_IOVA_BASE    0x10000000ULL
-#define HOUJI_WIFI_DMA_ARENA_BYTES  (32u * 1024u * 1024u)
+#define HOUJI_WIFI_DMA_ARENA_BYTES  (128u * 1024u * 1024u)
 #define HOUJI_WIFI_MSI_SINK_BYTES   4096u
 
 /* WCN7850 MHI / BHI / BHIe offsets and constants */

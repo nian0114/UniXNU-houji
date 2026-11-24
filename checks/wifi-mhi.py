@@ -24,7 +24,7 @@ def main():
     assert 'panic(' not in mhi_text, 'Stage 2 Wi-Fi runtime must never panic'
     assert 'HOUJI_PARF_BDF_TO_SID_TABLE' in pcie_text
     assert 'HOUJI_PARF_BDF_TO_SID_CFG' in pcie_text
-    assert 'hwWifiRunStage2(' in pcie_text
+    assert 'hwWifiRunStack(' in pcie_text
 
     unit = '#include <assert.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n'
     unit += '#include ' + json.dumps(str(MHI_POLICY)) + '\n'
@@ -149,11 +149,12 @@ int main(void) {
   assert(plan2.bank == 62u && smmu->invalid_s2cr_reads == 0u);
   free(smmu);
 
-  /* 3. Power-of-two aligned 32-bit IOVA arena allocator */
-  uint8_t *backing = (uint8_t *)calloc(1u, HOUJI_WIFI_DMA_ARENA_BYTES);
+  /* 3. Power-of-two aligned 32-bit IOVA arena allocator (test 32 MiB slice on host) */
+  const uint32_t kTestArena = 32u * 1024u * 1024u;
+  uint8_t *backing = (uint8_t *)calloc(1u, kTestArena);
   assert(backing != NULL);
   HoujiWifiArena arena;
-  assert(houji_wifi_arena_init(&arena, backing, HOUJI_WIFI_DMA_IOVA_BASE, HOUJI_WIFI_DMA_ARENA_BYTES) == 1);
+  assert(houji_wifi_arena_init(&arena, backing, HOUJI_WIFI_DMA_IOVA_BASE, kTestArena) == 1);
   uint64_t amss_iova = 0, ctx_iova = 0, tbl_iova = 0;
   void *amss = houji_wifi_arena_alloc(&arena, 6365248u, &amss_iova);
   assert(amss != NULL && (amss_iova & ((8u * 1024u * 1024u) - 1u)) == 0ULL);

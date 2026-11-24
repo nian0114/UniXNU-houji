@@ -98,9 +98,9 @@ static void hwWifiSampleSmmuFaults(void) {
 }
 
 static uint32_t hwWifiSetupSmmu(void) {
-  constexpr size_t kTablePoolPages = 24u;
+  constexpr size_t kTablePoolPages = 80u;
   constexpr size_t kTablePoolBytes = kTablePoolPages * 4096u;
-  constexpr size_t kMaxRanges      = 8192u;
+  constexpr size_t kMaxRanges      = 32768u;
 
   hwWifiMhi.smmu = mapPhys(HOUJI_APPS_SMMU_BASE, HOUJI_APPS_SMMU_MAP_BYTES, hwWifiMhi.smmuMap);
   if (!hwWifiMhi.smmu) return 100u;
