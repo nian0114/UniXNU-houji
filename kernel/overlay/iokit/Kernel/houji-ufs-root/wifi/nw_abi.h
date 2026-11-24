@@ -85,6 +85,13 @@ unsigned nw_wifi_wait_ms(unsigned maximum);
 void nw_wifi_stop(void);
 extern struct nw_wifi_stats nw_wifi_stats;
 extern volatile uint64_t nw_wifi_where[4];
+enum nw_control_send_result { NW_CONTROL_SEND_OK, NW_CONTROL_SEND_AGAIN, NW_CONTROL_SEND_CLOSED };
+struct nw_control_transport {
+  void *context;
+  int (*send)(void *context, uint64_t session, const void *bytes, size_t length);
+  void (*wake)(void *context);
+};
+int nw_wifi_control_transport_set(const struct nw_control_transport *transport);
 #ifdef __cplusplus
 }
 #endif

@@ -47,6 +47,8 @@ static struct {
   uint32_t logLines;
   char lastNote[4][112];
   uint32_t noteIdx;
+  char firstErr[4][112];
+  uint32_t errCount;
 } hwWifiStack;
 
 struct HwWifiFwSlot {
@@ -218,6 +220,12 @@ static void hwWifiNwLog(int level, const char *line) {
   if (level <= 6) {
     uint32_t slot = __atomic_fetch_add(&hwWifiStack.noteIdx, 1u, __ATOMIC_RELAXED) & 3u;
     snprintf(hwWifiStack.lastNote[slot], sizeof(hwWifiStack.lastNote[slot]), "%.108s", line);
+    if (level <= 4) {
+      uint32_t ec = __atomic_fetch_add(&hwWifiStack.errCount, 1u, __ATOMIC_RELAXED);
+      if (ec < 4u) {
+        snprintf(hwWifiStack.firstErr[ec], sizeof(hwWifiStack.firstErr[ec]), "%.108s", line);
+      }
+    }
     if (n < 120u || level <= 4) {
       IOLog("HOUJI WIFI NW[%d]: %.112s\n", level, line);
     }
@@ -448,6 +456,15 @@ static void hwWifiMsiWait(unsigned ms) {
   __atomic_store_n(&hwWifiStack.msiWake, 0u, __ATOMIC_RELEASE);
 }
 
+static int hwWifiCtrlSend(void *, uint64_t, const void *, size_t) {
+  return NW_CONTROL_SEND_CLOSED;
+}
+
+static void hwWifiCtrlWake(void *) {
+  __atomic_store_n(&hwWifiStack.msiWake, 1u, __ATOMIC_RELEASE);
+  thread_wakeup(reinterpret_cast<event_t>(&hwWifiStack.msiWake));
+}
+
 static uint32_t hwWifiRunStack(uint32_t barBase, uint32_t barSize) {
   (void)barBase;
   __atomic_store_n(&hwWifiMhi.active, 1u, __ATOMIC_RELEASE);
@@ -509,6 +526,10 @@ static uint32_t hwWifiRunStack(uint32_t barBase, uint32_t barSize) {
   __atomic_store_n(&hwWifiStack.active, 1u, __ATOMIC_RELEASE);
   nw_wifi_set_platform(&plat);
   nw_wifi_set_events(&ev);
+  static const struct nw_control_transport ctrlTransport = {
+    nullptr, hwWifiCtrlSend, hwWifiCtrlWake
+  };
+  (void)nw_wifi_control_transport_set(&ctrlTransport);
 
   int rc = nw_wifi_start(&plat, &board);
   __atomic_store_n(&hwWifiStack.startErr, rc, __ATOMIC_RELEASE);
@@ -576,5 +597,10 @@ static void hwWifiStackSnapshot(void) {
   if (notes > 0u) {
     uint32_t last = (notes - 1u) & 3u;
     IOLog("HOUJI WIFI NOTE: %s\n", hwWifiStack.lastNote[last]);
+  }
+  uint32_t ec = __atomic_load_n(&hwWifiStack.errCount, __ATOMIC_RELAXED);
+  uint32_t show = (ec < 4u) ? ec : 4u;
+  for (uint32_t i = 0; i < show; ++i) {
+    IOLog("HOUJI WIFI ERR[%u]: %s\n", i, hwWifiStack.firstErr[i]);
   }
 }
