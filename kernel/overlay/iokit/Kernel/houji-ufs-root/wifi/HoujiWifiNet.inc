@@ -101,6 +101,17 @@ static uint32_t gHwIoctlCount;
 struct HwIoctlLog { int32_t type; uint8_t isSet; uint16_t len; int16_t ret; };
 static HwIoctlLog gHwIoctlHist[16];
 static uint32_t gHwIoctlHistN;
+struct HwWifiActionLog {
+  uint32_t requests;
+  uint64_t lastIoctl;
+};
+static HwWifiActionLog gHwScanAction, gHwJoinAction;
+static uint64_t gHwJoinAuth;
+static uint32_t gHwJoinKeyInfo;
+static uint32_t gHwJoinBssMatch;
+static uint32_t gHwJoinCompletions;
+static int gHwLastJoinResult;
+static uint32_t gHwLastScanArgs;
 
 static uint64_t hwNetContMs(void) {
   uint64_t ns = 0;
@@ -218,6 +229,8 @@ static void hwNetOnConnectDone(int result) {
   nw_wifi_status snap = {};
   nw_wifi_status_get(&snap);
   if (result == NW_RES_OK && snap.state != NW_STA_UP) return;
+  __atomic_store_n(&gHwLastJoinResult, result, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&gHwJoinCompletions, 1u, __ATOMIC_RELEASE);
   gHwAssocResult = (result == NW_RES_OK) ? kHwAssocOk :
                    (result == NW_RES_BAD_KEY) ? kHwAssocBadKey :
                    (result == NW_RES_TIMEOUT) ? kHwAssocTimeout : kHwAssocFailed;
@@ -421,12 +434,17 @@ static int hwNetCopyAssoc(const houji_a80211req &rq, hw_assoc_params &out) {
   union { hw_assoc_req legacy; hw_assoc_req27 modern; } wire;
   int err = hwNetCopyIn(rq, &wire, sizeof(wire));
   if (!err) {
-    if (rq.req_len == sizeof(hw_assoc_req27)) {
-      if (wire.modern.version != 1) err = EINVAL;
-      else out = wire.modern.network;
+    const bool modern = rq.req_len == sizeof(hw_assoc_req27);
+    const uint32_t version = modern ? wire.modern.version : wire.legacy.version;
+    if (version != 1) {
+      err = EINVAL;
     } else {
-      if (wire.legacy.version != 1) err = EINVAL;
-      else out = wire.legacy.network;
+      out = modern ? wire.modern.network : wire.legacy.network;
+      const uint32_t lower = modern ? wire.modern.auth_lower : wire.legacy.auth_lower;
+      const uint32_t upper = modern ? wire.modern.auth_upper : wire.legacy.auth_upper;
+      __atomic_store_n(&gHwJoinAuth, ((uint64_t)upper << 32) | lower, __ATOMIC_RELAXED);
+      __atomic_store_n(&gHwJoinKeyInfo, (MIN(out.key_cipher, 65535u) << 16) | MIN(out.key_length, 65535u),
+                       __ATOMIC_RELAXED);
     }
   }
   memset(&wire, 0, sizeof(wire));
@@ -514,6 +532,8 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
           scanType = names->scan_type;
           houji_wifi_scan_multiple_target(names, &ssid, &ssidLen);
         }
+        __atomic_store_n(&gHwLastScanArgs, (MIN(scanType, 65535u) << 16) | (freqs << 1) |
+                         (ssidLen > 0u && ssidLen <= 32u), __ATOMIC_RELAXED);
         if (scanType == HOUJI_WIFI_SCAN_TYPE_CACHED && nw_wifi_bss_count() > 0) {
           gHwScanCursor = 0;
           return 0;
@@ -553,6 +573,19 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
           memset(&a, 0, sizeof(a));
           return EINVAL;
         }
+        unsigned matches = 0, frequency = 0;
+        int bestSignal = -200;
+        for (int i = 0, count = nw_wifi_bss_count(); i < count; ++i) {
+          nw_bss_info b = {};
+          if (nw_wifi_bss_get(i, &b) || houji_wifi_held_stale(b.age_ms) ||
+              b.ssid_len != a.ssid_length || memcmp(b.ssid, a.ssid, a.ssid_length)) continue;
+          ++matches;
+          if (b.signal_dbm > bestSignal) {
+            frequency = b.freq_mhz;
+            bestSignal = b.signal_dbm;
+          }
+        }
+        __atomic_store_n(&gHwJoinBssMatch, (matches << 16) | (frequency & 65535u), __ATOMIC_RELAXED);
         const bool hasBssid = (a.bssid[0] | a.bssid[1] | a.bssid[2] | a.bssid[3] | a.bssid[4] | a.bssid[5]) != 0;
         const bool hasKey = (a.key_length != 0);
         if (!gHwPower) { memset(&a, 0, sizeof(a)); return ENETDOWN; }
@@ -676,11 +709,33 @@ static errno_t hwNetIfIoctl(ifnet_t, unsigned long cmd, void *data) {
       houji_a80211req *rq = static_cast<houji_a80211req *>(data);
       rq->req_kernel = 0;
       uint32_t origLen = rq->req_len;
-      int ret = hwNetApple80211(cmd == HOUJI_SIOCSA80211, *rq);
+      const bool set = cmd == HOUJI_SIOCSA80211;
+      HwWifiActionLog *action = nullptr;
+      if (set) {
+        switch (rq->req_type) {
+          case kHwScanReq: case kHwScanReqMultiple:
+            action = &gHwScanAction;
+            __atomic_store_n(&gHwLastScanArgs, 0, __ATOMIC_RELAXED);
+            break;
+          case kHwAssociate:
+            action = &gHwJoinAction;
+            __atomic_store_n(&gHwJoinAuth, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&gHwJoinKeyInfo, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&gHwJoinBssMatch, 0, __ATOMIC_RELAXED);
+            break;
+          default: break;
+        }
+      }
+      int ret = hwNetApple80211(set, *rq);
+      if (action) {
+        const uint64_t entry = ((uint64_t)origLen << 32) | ((uint32_t)rq->req_type << 16) | (uint16_t)ret;
+        __atomic_store_n(&action->lastIoctl, entry, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&action->requests, 1u, __ATOMIC_RELEASE);
+      }
       __atomic_fetch_add(&gHwIoctlCount, 1u, __ATOMIC_RELAXED);
       uint32_t idx = __atomic_fetch_add(&gHwIoctlHistN, 1u, __ATOMIC_RELAXED);
       if (idx < 16u) {
-        gHwIoctlHist[idx] = { rq->req_type, (uint8_t)(cmd == HOUJI_SIOCSA80211 ? 1u : 0u),
+        gHwIoctlHist[idx] = { rq->req_type, (uint8_t)set,
                               (uint16_t)(origLen > 65535u ? 65535u : origLen), (int16_t)ret };
       }
       return ret;
@@ -812,6 +867,21 @@ static void hwWifiNetSnapshot(void) {
         (unsigned long long)cs.connections,
         (unsigned long long)cs.disconnections,
         cs.last_operation);
+  const uint32_t scans = __atomic_load_n(&gHwScanAction.requests, __ATOMIC_ACQUIRE);
+  const uint32_t joins = __atomic_load_n(&gHwJoinAction.requests, __ATOMIC_ACQUIRE);
+  const uint64_t scan = __atomic_load_n(&gHwScanAction.lastIoctl, __ATOMIC_RELAXED);
+  const uint64_t join = __atomic_load_n(&gHwJoinAction.lastIoctl, __ATOMIC_RELAXED);
+  const uint64_t auth = __atomic_load_n(&gHwJoinAuth, __ATOMIC_RELAXED);
+  const uint32_t key = __atomic_load_n(&gHwJoinKeyInfo, __ATOMIC_RELAXED);
+  const uint32_t match = __atomic_load_n(&gHwJoinBssMatch, __ATOMIC_RELAXED);
+  const uint32_t completions = __atomic_load_n(&gHwJoinCompletions, __ATOMIC_ACQUIRE);
+  const uint32_t scanArgs = __atomic_load_n(&gHwLastScanArgs, __ATOMIC_RELAXED);
+  IOLog("HOUJI WIFI REQUESTS: scan=%u last=%uS(%u)->%u mode=%u named=%u freqs=%u join=%u last=%uS(%u)->%u auth=%x/%x cipher=%u key-bytes=%u match=%u/%uMHz done=%u result=%d\n",
+        scans, (unsigned)(uint16_t)(scan >> 16), (unsigned)(scan >> 32), (unsigned)(uint16_t)scan,
+        scanArgs >> 16, scanArgs & 1u, (scanArgs & 65535u) >> 1,
+        joins, (unsigned)(uint16_t)(join >> 16), (unsigned)(join >> 32), (unsigned)(uint16_t)join,
+        (unsigned)auth, (unsigned)(auth >> 32), key >> 16, key & 65535u, match >> 16, match & 65535u,
+        completions, __atomic_load_n(&gHwLastJoinResult, __ATOMIC_RELAXED));
   uint32_t hn = __atomic_load_n(&gHwIoctlHistN, __ATOMIC_RELAXED);
   if (hn > 16u) hn = 16u;
   if (hn > 0u) {

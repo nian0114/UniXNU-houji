@@ -2068,7 +2068,7 @@
     "kernel/overlay/iokit/Kernel/houji-ufs-root/vendor/ArmSmmu4K/ArmSmmu4KProgram.h": "171900c3ed400b805c3a1587959f66bc4a19db18aedc8111e862651a90bb8d8f",
     "kernel/overlay/iokit/Kernel/houji-ufs-root/wifi/HoujiWifiMhi.inc": "cc4769d6814b45a249a79a4b8f1f86a874ef2320436aacad6b27791c60acfa93",
     "kernel/overlay/iokit/Kernel/houji-ufs-root/wifi/HoujiWifiMhiPolicy.h": "677056786d53bdee973133d5ed2565e828784cef98be2199438303ba7f4df126",
-    "kernel/overlay/iokit/Kernel/houji-ufs-root/wifi/HoujiWifiNet.inc": "86286e47dc7c1f07efd239da7144e8fcabe7ea0d12e480ab518eeeee200e74d2",
+    "kernel/overlay/iokit/Kernel/houji-ufs-root/wifi/HoujiWifiNet.inc": "895ff45eda893c9eccd37368d5bfc335294b9ab50df278c568b159c7cb085971",
     "kernel/overlay/iokit/Kernel/houji-ufs-root/wifi/HoujiWifiPcie.inc": "4f9628659daa7fb370135bb770223e48539c22af4d1db69ac209c77b14ace05e",
     "kernel/overlay/iokit/Kernel/houji-ufs-root/wifi/HoujiWifiPciePolicy.h": "143517f06035ee13c93ce244a98f91f3c47a9eec5db241bd49f06403d1bb3937",
     "kernel/overlay/iokit/Kernel/houji-ufs-root/wifi/HoujiWifiPhyTable.h": "ece31850d9b10f38c90110955a8e0073ab2cf46de01392045f1d896a49444f2e",
