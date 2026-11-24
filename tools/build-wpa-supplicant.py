@@ -2,6 +2,7 @@
 """Cross-compile Ath12kWifi's wpa_supplicant 2.12 + native XNU control backend for iOS 16 arm64."""
 import argparse
 from pathlib import Path
+import plistlib
 import shlex
 import shutil
 import subprocess
@@ -46,8 +47,16 @@ def main():
 
     dst = out / 'unixnu-wpa_supplicant'
     shutil.copy2(wpa_dir / 'wpa_supplicant', dst)
-    subprocess.run(['codesign', '-f', '-s', '-', '--identifier', 'org.unixnu.wpa_supplicant', str(dst)], check=True)
-    print(f'PASS: built and ad-hoc signed {dst} ({dst.stat().st_size} bytes)')
+    dst.chmod(0o755)
+    ent = out / 'entitlements.plist'
+    ent.write_bytes(plistlib.dumps({'com.apple.private.security.no-container': True}))
+    subprocess.run([
+        'codesign', '--force', '--sign', '-', '--pagesize', '4096',
+        '--identifier', 'org.unixnu.wifi.supplicant',
+        '--entitlements', str(ent), str(dst),
+    ], check=True)
+    subprocess.run(['codesign', '--verify', '--strict', str(dst)], check=True)
+    print(f'PASS: built and signed {dst} ({dst.stat().st_size} bytes, no-container)')
 
 
 if __name__ == '__main__':
