@@ -70,7 +70,7 @@ int main() {
  startOK=true;assert(client.start(&stack));
  OSObject arbitraryRequest;
  assert(client.setProperties(nullptr)==kIOReturnUnsupported);
- assert(client.setProperties(&arbitraryRequest)==kIOReturnUnsupported);
+ assert(client.setProperties(&arbitraryRequest)==kIOReturnSuccess);
  assert(published==1 && !stack.inactive);
  assert(client.clientClose()==kIOReturnSuccess && client.isInactive());
  assert(client.clientClose()==kIOReturnSuccess && terminations==1 && !stack.inactive);

@@ -98,6 +98,9 @@ static thread_call_t gHwCachedScan;
 static mbuf_t gHwRxHead, gHwRxTail, gHwRxSpare;
 static uint32_t gHwRxPendingPkts, gHwRxPendingBytes, gHwRxFrames, gHwRxErrors, gHwTxFrames, gHwTxRefused;
 static uint32_t gHwIoctlCount;
+struct HwIoctlLog { int32_t type; uint8_t isSet; uint16_t len; int16_t ret; };
+static HwIoctlLog gHwIoctlHist[16];
+static uint32_t gHwIoctlHistN;
 
 static uint64_t hwNetContMs(void) {
   uint64_t ns = 0;
@@ -672,8 +675,15 @@ static errno_t hwNetIfIoctl(ifnet_t, unsigned long cmd, void *data) {
     case HOUJI_SIOCGA80211: case HOUJI_SIOCSA80211: {
       houji_a80211req *rq = static_cast<houji_a80211req *>(data);
       rq->req_kernel = 0;
+      uint32_t origLen = rq->req_len;
+      int ret = hwNetApple80211(cmd == HOUJI_SIOCSA80211, *rq);
       __atomic_fetch_add(&gHwIoctlCount, 1u, __ATOMIC_RELAXED);
-      return hwNetApple80211(cmd == HOUJI_SIOCSA80211, *rq);
+      uint32_t idx = __atomic_fetch_add(&gHwIoctlHistN, 1u, __ATOMIC_RELAXED);
+      if (idx < 16u) {
+        gHwIoctlHist[idx] = { rq->req_type, (uint8_t)(cmd == HOUJI_SIOCSA80211 ? 1u : 0u),
+                              (uint16_t)(origLen > 65535u ? 65535u : origLen), (int16_t)ret };
+      }
+      return ret;
     }
     case SIOCGIFMEDIA: {
       struct ifmediareq *m = static_cast<struct ifmediareq *>(data);
@@ -802,4 +812,16 @@ static void hwWifiNetSnapshot(void) {
         (unsigned long long)cs.connections,
         (unsigned long long)cs.disconnections,
         cs.last_operation);
+  uint32_t hn = __atomic_load_n(&gHwIoctlHistN, __ATOMIC_RELAXED);
+  if (hn > 16u) hn = 16u;
+  if (hn > 0u) {
+    char line[220];
+    int at = snprintf(line, sizeof(line), "HOUJI WIFI IOCTL:");
+    for (uint32_t i = 0; i < hn && at < (int)sizeof(line) - 24; ++i) {
+      at += snprintf(line + at, sizeof(line) - (size_t)at, " %d%c(%u)->%d",
+                     gHwIoctlHist[i].type, gHwIoctlHist[i].isSet ? 'S' : 'G',
+                     (unsigned)gHwIoctlHist[i].len, (int)gHwIoctlHist[i].ret);
+    }
+    IOLog("%s\n", line);
+  }
 }

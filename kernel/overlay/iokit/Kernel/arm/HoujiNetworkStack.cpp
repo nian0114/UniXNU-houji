@@ -83,8 +83,7 @@ IOReturn IONetworkStackUserClient::clientClose(void) {
 }
 
 IOReturn IONetworkStackUserClient::setProperties(OSObject *properties) {
-    (void)properties;
     __atomic_fetch_add(&gHoujiNetworkNamingRequests, 1, __ATOMIC_RELAXED);
-    return kIOReturnUnsupported;
+    return properties ? kIOReturnSuccess : kIOReturnUnsupported;
 }
 #endif

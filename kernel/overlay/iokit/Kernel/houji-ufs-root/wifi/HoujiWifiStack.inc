@@ -683,6 +683,7 @@ static uint32_t hwWifiRunStack(uint32_t barBase, uint32_t barSize) {
 
   /* 5. Main wireless worker loop: bring up en0/IO80211Interface on radio ready (stage >= 4) */
   uint64_t sliceStart = hwWifiNwNowNs();
+  bool testScanSent = false;
   for (;;) {
     int busy = nw_wifi_step();
 
@@ -692,6 +693,15 @@ static uint32_t hwWifiRunStack(uint32_t barBase, uint32_t barSize) {
       nw_wifi_status st = {};
       nw_wifi_status_get(&st);
       houjiWifiNetStart(st.mac);
+    }
+
+    if (hwWifiStack.scanRequested && !testScanSent) {
+      nw_control_stats cs = {};
+      nw_wifi_control_stats_get(&cs);
+      if (cs.active_session != 0ULL && nw_wifi_stats.scans == 0u) {
+        testScanSent = true;
+        (void)nw_wifi_scan(nullptr, 0);
+      }
     }
 
     if (!busy) {
