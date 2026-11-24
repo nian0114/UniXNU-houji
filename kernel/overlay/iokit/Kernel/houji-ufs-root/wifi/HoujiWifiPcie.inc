@@ -6,6 +6,7 @@
 // snapshot for periodic XnuLog checkpoints.
 #include "HoujiWifiPciePolicy.h"
 #include "HoujiWifiPhyTable.h"
+#include "HoujiWifiMhiPolicy.h"
 
 static struct {
   OSSharedPtr<IOMemoryMap> gpioMaps[6];
@@ -75,6 +76,8 @@ static uint32_t hwWifiSampleGpioIn(void) {
   }
   return mask;
 }
+
+#include "HoujiWifiMhi.inc"
 
 static uint32_t hwWifiRun(void) {
   // Stage 1: Map and validate TLMM GPIOs (WLAN_EN=16, PERST#=94, CLKREQ#=95, WAKE#=96)
@@ -169,6 +172,20 @@ static uint32_t hwWifiRun(void) {
              HOUJI_PARF_SYS_CTRL_SLV_WAKEUP_EN;
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_SYS_CTRL, sysCtrl);
   hwWifiWrite32(hwWifi.parf, HOUJI_PARF_Q2A_FLUSH, 0u);
+
+  // Stage 2 PCIe DMA prerequisites: AXI master write halt v2 + BDF-to-SID hash table
+  // mapping WCN7850 (BDF 0x0100) to SID offset 1 (0x1400 + 1 = 0x1401).
+  uint32_t axiHalt = hwWifiRead32(hwWifi.parf, HOUJI_PARF_AXI_MSTR_WR_HALT_V2);
+  hwWifiWrite32(hwWifi.parf, HOUJI_PARF_AXI_MSTR_WR_HALT_V2, axiHalt | (1u << 31));
+  for (unsigned i = 0; i < 256u; ++i) {
+    hwWifiWrite32(hwWifi.parf, HOUJI_PARF_BDF_TO_SID_TABLE + 4u * i, 0u);
+  }
+  uint8_t epHash = houji_wifi_bdf_crc8(0x0100u);
+  hwWifiWrite32(hwWifi.parf, HOUJI_PARF_BDF_TO_SID_TABLE + 4u * epHash,
+                houji_wifi_bdf_sid_entry(0x0100u, 1u, 0u));
+  uint32_t sidCfg = hwWifiRead32(hwWifi.parf, HOUJI_PARF_BDF_TO_SID_CFG);
+  hwWifiWrite32(hwWifi.parf, HOUJI_PARF_BDF_TO_SID_CFG, sidCfg & ~1u);
+
   __atomic_store_n(&hwWifi.parfSysCtrl, hwWifiRead32(hwWifi.parf, HOUJI_PARF_SYS_CTRL), __ATOMIC_RELAXED);
   uint32_t refClkOrig = hwWifiRead32(hwWifi.parf, HOUJI_PARF_PHY_REFCLK);
   __atomic_store_n(&hwWifi.parfRefClk, refClkOrig, __ATOMIC_RELAXED);
@@ -354,7 +371,7 @@ static uint32_t hwWifiRun(void) {
   __atomic_store_n(&hwWifi.bar0Size, barSize, __ATOMIC_RELAXED);
   __atomic_store_n(&hwWifi.bar0Is64, barIs64, __ATOMIC_RELAXED);
 
-  hwWifi.bar0 = mapPhys(barBase, 0x1000, hwWifi.bar0Map);
+  hwWifi.bar0 = mapPhys(barBase, barSize, hwWifi.bar0Map);
   if (!hwWifi.bar0) return 61u;
 
   uint32_t mhiRegLen = hwWifiRead32(hwWifi.bar0, HOUJI_MHI_REGLEN_OFF);
@@ -369,7 +386,9 @@ static uint32_t hwWifiRun(void) {
   hwWifiSetStage(HOUJI_WIFI_STAGE_BAR0_READY);
   IOLog("HOUJI WIFI PCIE: stage=5 WCN7850 ready bar0=%08x size=%x 64b=%u mhi-len=%08x mhi-ver=%08x mhi-cfg=%08x mhi-st=%08x\n",
         barBase, barSize, barIs64, mhiRegLen, mhiVer, mhiCfg, mhiStatus);
-  return 0u;
+
+  // Stage 2: SMMU Stage-1, modem_a amss20.bin load, DWC MSI, chipPowerUp, and MHI BHI/BHIe boot.
+  return hwWifiRunStage2(barBase, barSize);
 }
 
 static void hwWifiThread(void *, wait_result_t) {
@@ -431,4 +450,5 @@ extern "C" void houji_wifi_pcie_snapshot(void) {
         __atomic_load_n(&hwWifi.parfRefClk, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.dbiDbg0, __ATOMIC_RELAXED),
         __atomic_load_n(&hwWifi.dbiDbg1, __ATOMIC_RELAXED));
+  hwWifiMhiSnapshot();
 }

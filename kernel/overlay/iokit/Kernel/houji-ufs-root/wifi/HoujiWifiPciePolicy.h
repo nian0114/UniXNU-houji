@@ -57,6 +57,7 @@ extern "C" {
 #define HOUJI_PARF_DBI_BASE_ADDR_V1     0x0168u
 #define HOUJI_PARF_SLV_ADDR_SPACE_V1    0x016cu
 #define HOUJI_PARF_MHI_CLK_RST_CTRL     0x0174u
+#define HOUJI_PARF_AXI_MSTR_WR_HALT_V2  0x01a8u
 #define HOUJI_PARF_Q2A_FLUSH            0x01acu
 #define HOUJI_PARF_LTSSM                0x01b0u
 #define HOUJI_PARF_DBI_BASE_ADDR_V2     0x0350u
@@ -66,6 +67,8 @@ extern "C" {
 #define HOUJI_PARF_ATU_BASE_ADDR        0x0634u
 #define HOUJI_PARF_ATU_BASE_ADDR_HI     0x0638u
 #define HOUJI_PARF_DEVICE_TYPE          0x1000u
+#define HOUJI_PARF_BDF_TO_SID_TABLE     0x2000u
+#define HOUJI_PARF_BDF_TO_SID_CFG       0x2c00u
 
 /* Read-only GCC PCIe0 diagnostic base (0x16b000, verified in ClockDxe.efi) */
 #define HOUJI_GCC_PCIE0_BASE            0x0016b000u
@@ -112,6 +115,11 @@ extern "C" {
 #define HOUJI_DBI_DEBUG1_LINK_UP    (1u << 4)
 #define HOUJI_DBI_DEBUG1_TRAINING   (1u << 29)
 #define HOUJI_DBI_LINK_WIDTH_SPEED  0x080cu
+#define HOUJI_DBI_MSI_ADDR_LO       0x0820u
+#define HOUJI_DBI_MSI_ADDR_HI       0x0824u
+#define HOUJI_DBI_MSI_INTR0_ENABLE  0x0828u
+#define HOUJI_DBI_MSI_INTR0_MASK    0x082cu
+#define HOUJI_DBI_MSI_INTR0_STATUS  0x0830u
 #define HOUJI_DBI_MISC_CONTROL_1    0x08bcu
 #define HOUJI_DBI_RO_WR_EN          (1u << 0)
 #define HOUJI_DBI_AUX_CLK_FREQ      0x0b40u
@@ -142,13 +150,18 @@ extern "C" {
 #define HOUJI_GCC_PCIE0_PIPE_CBCR_OFF   0x0048u
 #define HOUJI_GCC_PCIE0_PIPE_MUXR_OFF   0x0070u
 
-/* Read-only MHI register offsets inside WCN7850 BAR0 */
-#define HOUJI_MHI_REGLEN_OFF        0x0100u
-#define HOUJI_MHI_VER_OFF           0x0108u
-#define HOUJI_MHI_CFG_OFF           0x0110u
-#define HOUJI_MHI_STATUS_OFF        0x0148u
+/* MHI register offsets at start of WCN7850 BAR0 (0x1e0e100 mapped at BAR0+0x0) */
+#define HOUJI_MHI_REGLEN_OFF        0x0000u
+#define HOUJI_MHI_VER_OFF           0x0008u
+#define HOUJI_MHI_CFG_OFF           0x0010u
+#define HOUJI_MHI_CHDB_OFF          0x0018u
+#define HOUJI_MHI_ERDB_OFF          0x0020u
+#define HOUJI_MHI_BHI_OFF           0x0028u
+#define HOUJI_MHI_BHIE_OFF          0x002cu
+#define HOUJI_MHI_CTRL_OFF          0x0038u
+#define HOUJI_MHI_STATUS_OFF        0x0048u
 
-/* Stage 1 probe progress stages */
+/* Probe & bring-up progress stages */
 enum {
   HOUJI_WIFI_STAGE_IDLE       = 0u,
   HOUJI_WIFI_STAGE_GPIO       = 1u,
@@ -156,6 +169,10 @@ enum {
   HOUJI_WIFI_STAGE_LINK       = 3u,
   HOUJI_WIFI_STAGE_ENUM       = 4u,
   HOUJI_WIFI_STAGE_BAR0_READY = 5u,
+  HOUJI_WIFI_STAGE_SMMU_READY = 6u,
+  HOUJI_WIFI_STAGE_FW_LOADED  = 7u,
+  HOUJI_WIFI_STAGE_MHI_SBL    = 8u,
+  HOUJI_WIFI_STAGE_MISSION    = 9u,
 };
 
 typedef struct {

@@ -67,6 +67,7 @@ CHECKS = (
     'statusbar-geometry.py',
     'spmi-keys.py',
     'wifi-pcie.py',
+    'wifi-mhi.py',
 )
 
 

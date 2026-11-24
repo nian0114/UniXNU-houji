@@ -215,6 +215,27 @@ PrepareWifiHandoff (VOID)
     Print (L"HOUJI WIFI UEFI: %a+4=1 request=%u result=%r\n", RfClkName, Request, RfStatus);
   }
 
+  // Optional PCIe NoC BCM ("SN7" in sm8650 interconnect) bandwidth vote for WCN7850 DMA.
+  {
+    UINT32 BcmAddr = 0, BcmSlave = 0;
+    EFI_STATUS BcmStatus = ((HJ_QUERY)Db->Methods[1]) (Db, "SN7", &BcmAddr);
+    if (!EFI_ERROR (BcmStatus)) {
+      BcmStatus = ((HJ_QUERY)Db->Methods[7]) (Db, "SN7", &BcmSlave);
+    }
+    Print (L"HOUJI WIFI UEFI: bcm SN7 address=%x slave=%u query=%r\n", BcmAddr, BcmSlave, BcmStatus);
+    if (!EFI_ERROR (BcmStatus) && BcmSlave == 5 && BcmAddr != 0) {
+      UINT32 Request = 0;
+      UINT32 Vote = (1u << 30) | (1u << 29) | (0x400u << 14) | 0x400u;
+      BcmStatus = ((HJ_ISSUE)Rpmh->Methods[18]) (
+        mWifiPowerClient, 0, TRUE, BcmAddr, Vote, &Request
+      );
+      if (!EFI_ERROR (BcmStatus) && Request) {
+        BcmStatus = ((HJ_WAIT)Rpmh->Methods[11]) (mWifiPowerClient, Request);
+      }
+      Print (L"HOUJI WIFI UEFI: SN7=%x request=%u result=%r\n", Vote, Request, BcmStatus);
+    }
+  }
+
   // Phase 3: Enable PCIe0 GDSCs and clocks through OEM ClockDxe.
   for (UINTN I = 0; I < ARRAY_SIZE (Domains); I++) {
     Status = Clock->EnableClockPowerDomain (Clock, DomainIds[I]);
