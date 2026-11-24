@@ -70,6 +70,14 @@ enum {
 enum { kHwEvPower = 1, kHwEvSsid = 2, kHwEvBssid = 3, kHwEvLink = 4, kHwEvAssocDone = 9, kHwEvScanDone = 10 };
 enum { kHwAssocPending = 0, kHwAssocOk = 1, kHwAssocFailed = 2, kHwAssocTimeout = 9, kHwAssocBadKey = 21 };
 
+// iOS 16 IO80211 reads this after the 16-byte interface name in the KEV payload.
+struct hw_assoc_event16 {
+  uint8_t attempts[3][44];
+  uint32_t status;
+};
+static_assert(sizeof(hw_assoc_event16) == 136 && __builtin_offsetof(hw_assoc_event16, status) == 0x84,
+              "iOS 16 association event layout");
+
 struct hw_assoc_event27 {
   uint8_t attempts[10][52];
   uint32_t reserved[2], reason, result, has_result;
@@ -166,23 +174,29 @@ static void hwNetPostLinkDown(bool involuntary, int reason) {
 }
 
 static void hwNetPostAssocResult(void) {
-  if (gHwAssocModern) {
+  const uint32_t result = (uint32_t)__atomic_load_n(&gHwAssocResult, __ATOMIC_ACQUIRE);
+  nw_wifi_status cur = {};
+  nw_wifi_status_get(&cur);
+  if (__atomic_load_n(&gHwAssocModern, __ATOMIC_RELAXED)) {
     hw_assoc_event27 ev = {};
-    ev.result = (uint32_t)gHwAssocResult;
+    ev.result = result;
     ev.has_result = 1u;
-    nw_wifi_status cur = {};
-    nw_wifi_status_get(&cur);
     memcpy(ev.attempts[0], cur.bssid, 6);
     hwNetPostEv(kHwEvAssocDone, &ev, sizeof(ev));
   } else {
-    hwNetPostEv(kHwEvAssocDone, nullptr, 0);
+    hw_assoc_event16 ev = {};
+    // Status 1000 through 1010 carries result 1 through 11. The result
+    // ioctl supplies the full code when this event field cannot carry it.
+    if (result >= 1u && result <= 11u) ev.status = 999u + result;
+    memcpy(ev.attempts[0], cur.bssid, 6);
+    hwNetPostEv(kHwEvAssocDone, &ev, sizeof(ev));
   }
 }
 
 static void hwNetDisconnectUser(void) {
   bool pending = __atomic_exchange_n(&gHwJoinPending, false, __ATOMIC_ACQ_REL);
   gHwLinkSuppressed = true;
-  gHwAssocResult = kHwAssocFailed;
+  __atomic_store_n(&gHwAssocResult, kHwAssocFailed, __ATOMIC_RELEASE);
   nw_wifi_disconnect();
   hwWifiWakeWorker();
   hwNetPostLinkDown(false, 0);
@@ -231,9 +245,10 @@ static void hwNetOnConnectDone(int result) {
   if (result == NW_RES_OK && snap.state != NW_STA_UP) return;
   __atomic_store_n(&gHwLastJoinResult, result, __ATOMIC_RELAXED);
   __atomic_fetch_add(&gHwJoinCompletions, 1u, __ATOMIC_RELEASE);
-  gHwAssocResult = (result == NW_RES_OK) ? kHwAssocOk :
-                   (result == NW_RES_BAD_KEY) ? kHwAssocBadKey :
-                   (result == NW_RES_TIMEOUT) ? kHwAssocTimeout : kHwAssocFailed;
+  const int assocResult = (result == NW_RES_OK) ? kHwAssocOk :
+                          (result == NW_RES_BAD_KEY) ? kHwAssocBadKey :
+                          (result == NW_RES_TIMEOUT) ? kHwAssocTimeout : kHwAssocFailed;
+  __atomic_store_n(&gHwAssocResult, assocResult, __ATOMIC_RELEASE);
   bool pending = __atomic_exchange_n(&gHwJoinPending, false, __ATOMIC_ACQ_REL);
   IOLog("HOUJI WIFI NET: connect done res=%d state=%u rssi=%d\n", result, snap.state, (int)snap.signal_dbm);
   hwNetPostLink(result == NW_RES_OK);
@@ -251,7 +266,7 @@ static void hwNetOnConnectDone(int result) {
 
 static void hwNetOnLinkLost(int reason) {
   IOLog("HOUJI WIFI NET: link lost reason=%d\n", reason);
-  gHwAssocResult = kHwAssocFailed;
+  __atomic_store_n(&gHwAssocResult, kHwAssocFailed, __ATOMIC_RELEASE);
   hwNetPostLinkDown(true, reason);
 }
 
@@ -608,15 +623,18 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
           }
           keyLen = 64u;
         }
-        gHwAssocResult = kHwAssocPending;
-        gHwAssocModern = (rq.req_len == sizeof(hw_assoc_req27));
+        __atomic_store_n(&gHwAssocModern, rq.req_len == sizeof(hw_assoc_req27), __ATOMIC_RELAXED);
+        __atomic_store_n(&gHwAssocResult, kHwAssocPending, __ATOMIC_RELEASE);
         gHwLinkSuppressed = false;
         __atomic_store_n(&gHwJoinPending, true, __ATOMIC_RELEASE);
         gHwKeyed = hasKey;
         int r = nw_wifi_connect(a.ssid, a.ssid_length, hasBssid ? a.bssid : nullptr,
                                 hasKey ? pass : nullptr, hasKey ? keyLen : 0u);
         if (!r) hwWifiWakeWorker();
-        else { gHwAssocResult = kHwAssocFailed; __atomic_store_n(&gHwJoinPending, false, __ATOMIC_RELEASE); }
+        else {
+          __atomic_store_n(&gHwAssocResult, kHwAssocFailed, __ATOMIC_RELEASE);
+          __atomic_store_n(&gHwJoinPending, false, __ATOMIC_RELEASE);
+        }
         memset(pass, 0, sizeof(pass));
         memset(&a, 0, sizeof(a));
         return r ? EINVAL : 0;
@@ -658,7 +676,11 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
       return hwNetCopyOut(rq, out.raw, 256);
     }
     case kHwCountryCode: { char cc[3]; hwNetCountry(cc); return hwNetAnswerBytes(rq, cc, 3u); }
-    case kHwAssociateResult: return hwNetAnswerVal(rq, (uint32_t)gHwAssocResult);
+    case kHwAssociateResult: {
+      uint32_t result = (uint32_t)__atomic_load_n(&gHwAssocResult, __ATOMIC_ACQUIRE);
+      if (result == kHwAssocPending && !__atomic_load_n(&gHwAssocModern, __ATOMIC_RELAXED)) result = 0xffffu;
+      return hwNetAnswerVal(rq, result);
+    }
     case kHwSupportedChannels: case kHwHwSupportedChannels: {
       out.chans.version = 1;
       static const uint16_t kFreqs[] = {
