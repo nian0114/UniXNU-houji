@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 KEEP_SYMS = {
     '_nw_wifi_start', '_nw_wifi_step', '_nw_wifi_stop', '_nw_wifi_stats',
@@ -33,10 +34,30 @@ def find_llvm_bin():
     return None
 
 
+def stage_regulatory_sources(module, out):
+    patch = Path(__file__).resolve().parents[1] / 'kernel/patches/ath12k-wcn7850-regulatory.patch'
+    source = module / 'out/ath12k-src'
+    overrides = out / 'ath12k-regulatory'
+    names = ('mac.c', 'reg.c')
+    overrides.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='ath12k-patch-', dir=out) as directory:
+        temporary = Path(directory)
+        for name in names:
+            shutil.copyfile(source / name, temporary / name)
+        subprocess.run(['patch', '-p1', '-F', '0', '-f', '-i', str(patch)], cwd=temporary, check=True)
+        for name in names:
+            updated = temporary / name
+            destination = overrides / name
+            if not destination.exists() or destination.read_bytes() != updated.read_bytes():
+                updated.replace(destination)
+    return {name: overrides / name for name in names}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--module', type=Path, required=True, help='Path to prepared Ath12kWifi checkout')
     parser.add_argument('--out', type=Path, required=True, help='Output directory for objects and libnw_wifi.a')
+    parser.add_argument('--fakeroot', type=Path, help='Also install libnw_wifi.a in the XNU fakeroot library directory')
     parser.add_argument('--triple', default='arm64-apple-macos13.0', help='Clang target triple matching XNU')
     parser.add_argument('--jobs', type=int, default=8)
     args = parser.parse_args()
@@ -45,6 +66,7 @@ def main():
     out = args.out.resolve()
     raw = out / 'raw'
     raw.mkdir(parents=True, exist_ok=True)
+    regulatory_sources = stage_regulatory_sources(module, out)
 
     clang = subprocess.run(['xcrun', '-f', 'clang'], check=True, capture_output=True, text=True).stdout.strip()
     libtool = subprocess.run(['xcrun', '-f', 'libtool'], check=True, capture_output=True, text=True).stdout.strip()
@@ -82,7 +104,7 @@ def main():
             continue
         tree, _, name = line.partition(':') if ':' in line else ('', '', line)
         if tree == 'ath12k':
-            src = module / 'out/ath12k-src' / name
+            src = regulatory_sources.get(name, module / 'out/ath12k-src' / name)
         elif tree == 'mhi':
             src = module / 'out/mhi-src' / name
         elif tree == 'qmi':
@@ -174,6 +196,10 @@ def main():
 
     archive = out / 'libnw_wifi.a'
     subprocess.run([libtool, '-static', '-o', str(archive), *[str(o) for o in objs]], check=True)
+    if args.fakeroot:
+        library_dir = args.fakeroot.resolve() / 'usr/local/lib/kernel'
+        library_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(archive, library_dir / archive.name)
     print(f'PASS: built {archive} ({len(objs)} objects, {len(names)} renamed symbols, {archive.stat().st_size} bytes)')
 
 
