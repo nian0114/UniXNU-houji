@@ -5,8 +5,10 @@
 // - GICv3 SPI 141 (INTID 173) DWC iMSI interrupt handler with automatic 1 ms polling fallback
 // - Automatic Stage 3 Wi-Fi scan on radio ready (stage >= 4) with XnuLog BSS evidence
 #include <IOKit/IODeviceTreeSupport.h>
+#include <sys/kern_control.h>
 #include "nw_abi.h"
 #include "../../../../pexpert/arm/HoujiSpi.h"
+#include "HoujiWifiNet.inc"
 
 extern "C" void _disable_preemption(void);
 extern "C" void _enable_preemption(void);
@@ -456,13 +458,139 @@ static void hwWifiMsiWait(unsigned ms) {
   __atomic_store_n(&hwWifiStack.msiWake, 0u, __ATOMIC_RELEASE);
 }
 
-static int hwWifiCtrlSend(void *, uint64_t, const void *, size_t) {
+struct HwWifiCtrlClient { uint64_t session; uint32_t unit; };
+static kern_ctl_ref hwWifiCtrlRef;
+static IOLock *hwWifiCtrlLock;
+static HwWifiCtrlClient *hwWifiCtrlClient;
+
+static void hwWifiWakeWorker(void) {
+  __atomic_store_n(&hwWifiStack.msiWake, 1u, __ATOMIC_RELEASE);
+  thread_wakeup(reinterpret_cast<event_t>(&hwWifiStack.msiWake));
+}
+
+static errno_t hwWifiCtrlErr(int status) {
+  switch (status) {
+    case NW_CONTROL_OK: return 0;
+    case NW_CONTROL_INVALID: return EINVAL;
+    case NW_CONTROL_BUSY: return EWOULDBLOCK;
+    case NW_CONTROL_NOT_READY: return ENXIO;
+    case NW_CONTROL_AUTH_FAILED: return EACCES;
+    case NW_CONTROL_TIMED_OUT: return ETIMEDOUT;
+    case NW_CONTROL_UNSUPPORTED: return EOPNOTSUPP;
+    case NW_CONTROL_NO_MEMORY: return ENOBUFS;
+    case NW_CONTROL_NOT_FOUND: return ENOENT;
+    case NW_CONTROL_STALE: return ESTALE;
+    default: return EIO;
+  }
+}
+
+static errno_t hwWifiCtrlConnect(kern_ctl_ref, sockaddr_ctl *addr, void **info) {
+  auto *owner = static_cast<HwWifiCtrlClient *>(IOMallocData(sizeof(HwWifiCtrlClient)));
+  if (!owner) return ENOMEM;
+  int st = nw_wifi_control_attach(&owner->session);
+  if (st) { IOFreeData(owner, sizeof(*owner)); return hwWifiCtrlErr(st); }
+  owner->unit = addr->sc_unit;
+  IOLockLock(hwWifiCtrlLock);
+  hwWifiCtrlClient = owner;
+  IOLockUnlock(hwWifiCtrlLock);
+  *info = owner;
+  IOLog("HOUJI WIFI CTL: client connected unit=%u session=%llu\n", owner->unit, (unsigned long long)owner->session);
+  return 0;
+}
+
+static errno_t hwWifiCtrlDisconnect(kern_ctl_ref, uint32_t, void *info) {
+  if (!info) return 0;
+  auto *owner = static_cast<HwWifiCtrlClient *>(info);
+  nw_wifi_control_detach(owner->session);
+  IOLockLock(hwWifiCtrlLock);
+  if (hwWifiCtrlClient == owner) hwWifiCtrlClient = nullptr;
+  IOLockUnlock(hwWifiCtrlLock);
+  IOFreeData(owner, sizeof(*owner));
+  return 0;
+}
+
+static int hwWifiCtrlReadMbuf(void *src, void *dst, size_t len) {
+  return mbuf_copydata(static_cast<mbuf_t>(src), 0, len, dst);
+}
+
+static errno_t hwWifiCtrlReceive(kern_ctl_ref, uint32_t, void *info, mbuf_t pkt, int) {
+  auto *owner = static_cast<HwWifiCtrlClient *>(info);
+  int st = nw_wifi_control_receive(owner->session, mbuf_pkthdr_len(pkt), hwWifiCtrlReadMbuf, pkt);
+  mbuf_freem(pkt);
+  return hwWifiCtrlErr(st);
+}
+
+static void hwWifiCtrlRcvd(kern_ctl_ref, uint32_t, void *info, int) {
+  nw_wifi_control_writable(static_cast<HwWifiCtrlClient *>(info)->session);
+}
+
+static errno_t hwWifiCtrlGetOpt(kern_ctl_ref, uint32_t, void *info, int opt, void *bytes, size_t *len) {
+  if (opt != NW_CONTROL_GET_SESSION) return ENOPROTOOPT;
+  if (!len) return EINVAL;
+  if (!bytes || *len < sizeof(uint64_t)) { *len = sizeof(uint64_t); return EMSGSIZE; }
+  uint64_t s = static_cast<HwWifiCtrlClient *>(info)->session;
+  memcpy(bytes, &s, sizeof(s));
+  *len = sizeof(s);
+  return 0;
+}
+
+static int hwWifiCtrlSend(void *, uint64_t session, const void *bytes, size_t length) {
+  IOLockLock(hwWifiCtrlLock);
+  bool active = hwWifiCtrlClient && hwWifiCtrlClient->session == session;
+  uint32_t unit = active ? hwWifiCtrlClient->unit : 0u;
+  IOLockUnlock(hwWifiCtrlLock);
+  if (!active || !hwWifiCtrlRef) return NW_CONTROL_SEND_CLOSED;
+  errno_t r = ctl_enqueuedata(hwWifiCtrlRef, unit, const_cast<void *>(bytes), length, CTL_DATA_EOR);
+  if (!r) return NW_CONTROL_SEND_OK;
+  if (r == ENOBUFS || r == EWOULDBLOCK) return NW_CONTROL_SEND_AGAIN;
   return NW_CONTROL_SEND_CLOSED;
 }
 
 static void hwWifiCtrlWake(void *) {
-  __atomic_store_n(&hwWifiStack.msiWake, 1u, __ATOMIC_RELEASE);
-  thread_wakeup(reinterpret_cast<event_t>(&hwWifiStack.msiWake));
+  hwWifiWakeWorker();
+}
+
+static int hwWifiCtrlStart(void) {
+  if (hwWifiCtrlRef) return 0;
+  if (!hwWifiCtrlLock) hwWifiCtrlLock = IOLockAlloc();
+  if (!hwWifiCtrlLock) return ENOMEM;
+  kern_ctl_reg reg = {};
+  snprintf(reg.ctl_name, sizeof(reg.ctl_name), "%s", NW_CONTROL_NAME);
+  reg.ctl_flags      = CTL_FLAG_PRIVILEGED | CTL_FLAG_REG_EXTENDED;
+  reg.ctl_sendsize   = 256u * 1024u;
+  reg.ctl_recvsize   = 512u * 1024u;
+  reg.ctl_connect    = hwWifiCtrlConnect;
+  reg.ctl_disconnect = hwWifiCtrlDisconnect;
+  reg.ctl_send       = hwWifiCtrlReceive;
+  reg.ctl_getopt     = hwWifiCtrlGetOpt;
+  reg.ctl_rcvd       = hwWifiCtrlRcvd;
+  errno_t r = ctl_register(&reg, &hwWifiCtrlRef);
+  if (r) return r;
+  static const struct nw_control_transport transport = { nullptr, hwWifiCtrlSend, hwWifiCtrlWake };
+  int st = nw_wifi_control_transport_set(&transport);
+  if (st) {
+    ctl_deregister(hwWifiCtrlRef);
+    hwWifiCtrlRef = nullptr;
+    return hwWifiCtrlErr(st);
+  }
+  return 0;
+}
+
+static void hwWifiPublishMac(void) {
+  uint8_t m[6];
+  if (!hwWifiBoardMac(m)) return;
+  if (IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane)) {
+    if (!chosen->getProperty("mac-address-wifi0")) {
+      chosen->setProperty("mac-address-wifi0", m, sizeof(m));
+    }
+    chosen->release();
+  }
+  if (IORegistryEntry *wlan = IORegistryEntry::fromPath("/arm-io/wlan", gIODTPlane)) {
+    if (!wlan->getProperty("local-mac-address")) {
+      wlan->setProperty("local-mac-address", m, sizeof(m));
+    }
+    wlan->release();
+  }
 }
 
 static uint32_t hwWifiRunStack(uint32_t barBase, uint32_t barSize) {
@@ -524,12 +652,17 @@ static uint32_t hwWifiRunStack(uint32_t barBase, uint32_t barSize) {
   board.diagnostics = 0u;
 
   __atomic_store_n(&hwWifiStack.active, 1u, __ATOMIC_RELEASE);
+  hwWifiPublishMac();
   nw_wifi_set_platform(&plat);
   nw_wifi_set_events(&ev);
-  static const struct nw_control_transport ctrlTransport = {
-    nullptr, hwWifiCtrlSend, hwWifiCtrlWake
-  };
-  (void)nw_wifi_control_transport_set(&ctrlTransport);
+  int ctlRc = hwWifiCtrlStart();
+  if (ctlRc) {
+    IOLog("HOUJI WIFI CTL: register failed rc=%d; falling back to closed transport\n", ctlRc);
+    static const struct nw_control_transport fallbackTransport = { nullptr, hwWifiCtrlSend, hwWifiCtrlWake };
+    (void)nw_wifi_control_transport_set(&fallbackTransport);
+  } else {
+    IOLog("HOUJI WIFI CTL: registered %s\n", NW_CONTROL_NAME);
+  }
 
   int rc = nw_wifi_start(&plat, &board);
   __atomic_store_n(&hwWifiStack.startErr, rc, __ATOMIC_RELEASE);
@@ -548,7 +681,7 @@ static uint32_t hwWifiRunStack(uint32_t barBase, uint32_t barSize) {
   nw_wifi_irq_mode(spiRc == HoujiSpiOk ? 1 : 0);
   IOLog("HOUJI WIFI STACK: started rc=0 nw_stage=%u spi141=%d\n", nw_wifi_stats.stage, spiRc);
 
-  /* 5. Main wireless worker loop: drive ath12k/mac80211 and trigger Stage 3 verification scan */
+  /* 5. Main wireless worker loop: bring up en0/IO80211Interface on radio ready (stage >= 4) */
   uint64_t sliceStart = hwWifiNwNowNs();
   for (;;) {
     int busy = nw_wifi_step();
@@ -556,9 +689,9 @@ static uint32_t hwWifiRunStack(uint32_t barBase, uint32_t barSize) {
     if (nw_wifi_stats.stage >= 4u && !hwWifiStack.scanRequested) {
       hwWifiStack.scanRequested = 1u;
       hwWifiSetStage(HOUJI_WIFI_STAGE_STACK_UP);
-      int scanRc = nw_wifi_scan(nullptr, 0);
-      IOLog("HOUJI WIFI STACK: radio ready (nw_stage=%u), triggered Stage 3 scan rc=%d\n",
-            nw_wifi_stats.stage, scanRc);
+      nw_wifi_status st = {};
+      nw_wifi_status_get(&st);
+      houjiWifiNetStart(st.mac);
     }
 
     if (!busy) {
@@ -603,4 +736,5 @@ static void hwWifiStackSnapshot(void) {
   for (uint32_t i = 0; i < show; ++i) {
     IOLog("HOUJI WIFI ERR[%u]: %s\n", i, hwWifiStack.firstErr[i]);
   }
+  hwWifiNetSnapshot();
 }

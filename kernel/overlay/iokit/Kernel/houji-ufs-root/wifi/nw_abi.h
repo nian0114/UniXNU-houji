@@ -85,13 +85,32 @@ unsigned nw_wifi_wait_ms(unsigned maximum);
 void nw_wifi_stop(void);
 extern struct nw_wifi_stats nw_wifi_stats;
 extern volatile uint64_t nw_wifi_where[4];
+#define NW_CONTROL_NAME "org.unixnu.wifi.control"
+#define NW_CONTROL_GET_SESSION 1
+enum nw_control_status {
+  NW_CONTROL_OK, NW_CONTROL_INVALID, NW_CONTROL_BUSY, NW_CONTROL_NOT_READY,
+  NW_CONTROL_AUTH_FAILED, NW_CONTROL_TIMED_OUT, NW_CONTROL_UNSUPPORTED,
+  NW_CONTROL_NO_MEMORY, NW_CONTROL_NOT_FOUND, NW_CONTROL_DRIVER_FAILED,
+  NW_CONTROL_STALE, NW_CONTROL_STATUS_MAX
+};
 enum nw_control_send_result { NW_CONTROL_SEND_OK, NW_CONTROL_SEND_AGAIN, NW_CONTROL_SEND_CLOSED };
 struct nw_control_transport {
   void *context;
   int (*send)(void *context, uint64_t session, const void *bytes, size_t length);
   void (*wake)(void *context);
 };
+struct nw_control_stats {
+  uint64_t accepted, dispatched, replies, events, malformed, stale_sessions, rx_full, tx_full, send_retries;
+  size_t rx_bytes, tx_bytes; unsigned rx_items, tx_items;
+  uint64_t connections, disconnections, active_session;
+  unsigned last_operation, last_status;
+};
 int nw_wifi_control_transport_set(const struct nw_control_transport *transport);
+int nw_wifi_control_attach(uint64_t *session);
+void nw_wifi_control_detach(uint64_t session);
+int nw_wifi_control_receive(uint64_t session, size_t length, int (*reader)(void *, void *, size_t), void *context);
+void nw_wifi_control_writable(uint64_t session);
+void nw_wifi_control_stats_get(struct nw_control_stats *stats);
 #ifdef __cplusplus
 }
 #endif
