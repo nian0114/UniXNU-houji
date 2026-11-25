@@ -359,6 +359,7 @@ static void hwNetOnRxPacket(void *ctx, size_t len, nw_packet_reader reader) {
   mbuf_pkthdr_setrcvif(m, gHwIf);
   mbuf_pkthdr_setheader(m, mbuf_data(m));
   mbuf_adj(m, 14);
+  bpf_tap_in(gHwIf, DLT_EN10MB, m, mbuf_pkthdr_header(m), 14);
   mbuf_setnextpkt(m, nullptr);
   if (gHwRxTail) mbuf_setnextpkt(gHwRxTail, m);
   else gHwRxHead = m;
@@ -398,6 +399,7 @@ static void hwNetMbufRelease(void *ctx) {
 static errno_t hwNetIfOutput(ifnet_t, mbuf_t m) {
   size_t len = mbuf_pkthdr_len(m);
   if (len >= 14u && len <= 2000u) {
+    bpf_tap_out(gHwIf, DLT_EN10MB, m, nullptr, 0);
     if (nw_wifi_tx_packet(m, len, hwNetMbufRead, hwNetMbufRelease) == 0) {
       ifnet_stat_increment_out(gHwIf, 1, (uint32_t)len, 0);
       __atomic_fetch_add(&gHwTxFrames, 1u, __ATOMIC_RELAXED);
