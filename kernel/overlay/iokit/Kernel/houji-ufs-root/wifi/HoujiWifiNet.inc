@@ -120,6 +120,28 @@ static uint32_t gHwJoinBssMatch;
 static uint32_t gHwJoinCompletions;
 static int gHwLastJoinResult;
 static uint32_t gHwLastScanArgs;
+static uint8_t gHwScanFilterSsid[32];
+static uint8_t gHwScanFilterLen;
+
+static bool hwNetSsidBlank(const uint8_t *ssid, size_t len) {
+  if (!len || !ssid) return true;
+  for (size_t i = 0; i < len; ++i) {
+    if (ssid[i] != 0u) return false;
+  }
+  return true;
+}
+
+static bool hwNetShadowedHiddenBeacon(const nw_bss_info &b, int count) {
+  if (!hwNetSsidBlank(b.ssid, b.ssid_len)) return false;
+  nw_bss_info other = {};
+  for (int i = 0; i < count; ++i) {
+    if (nw_wifi_bss_get(i, &other) || houji_wifi_held_stale(other.age_ms)) continue;
+    if (!hwNetSsidBlank(other.ssid, other.ssid_len) && !memcmp(other.bssid, b.bssid, 6)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 static uint64_t hwNetContMs(void) {
   uint64_t ns = 0;
@@ -549,6 +571,12 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
         }
         __atomic_store_n(&gHwLastScanArgs, (MIN(scanType, 65535u) << 16) | (freqs << 1) |
                          (ssidLen > 0u && ssidLen <= 32u), __ATOMIC_RELAXED);
+        if (ssid && ssidLen > 0u && ssidLen <= 32u) {
+          memcpy(gHwScanFilterSsid, ssid, ssidLen);
+          gHwScanFilterLen = (uint8_t)ssidLen;
+        } else {
+          gHwScanFilterLen = 0u;
+        }
         if (scanType == HOUJI_WIFI_SCAN_TYPE_CACHED && nw_wifi_bss_count() > 0) {
           gHwScanCursor = 0;
           return 0;
@@ -703,25 +731,52 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
       nw_bss_info b = {};
       const int count = nw_wifi_bss_count();
       do {
-        if (gHwScanCursor >= (unsigned)count || nw_wifi_bss_get((int)gHwScanCursor, &b)) { gHwScanCursor = 0; return EIO; }
+        if (gHwScanCursor >= (unsigned)count || nw_wifi_bss_get((int)gHwScanCursor, &b)) {
+          gHwScanCursor = 0;
+          gHwScanFilterLen = 0u;
+          return EIO;
+        }
         ++gHwScanCursor;
+        if (!houji_wifi_held_stale(b.age_ms)) {
+          if (gHwScanFilterLen > 0u &&
+              (b.ssid_len != gHwScanFilterLen || memcmp(b.ssid, gHwScanFilterSsid, gHwScanFilterLen) != 0)) {
+            b.age_ms = 0xffffffffu;
+          } else if (hwNetShadowedHiddenBeacon(b, count)) {
+            b.age_ms = 0xffffffffu;
+          }
+        }
       } while (houji_wifi_held_stale(b.age_ms));
       hwNetFillResult(out.res, b, rq.req_len);
       return hwNetCopyOut(rq, &out.res, sizeof(out.res));
     }
     case kHwCurrentNetwork: {
       if (st.state < NW_STA_ASSOC) return ENOENT;
-      nw_bss_info b = {};
+      nw_bss_info b = {}, fallback = {};
+      bool found = false, hasFallback = false;
       const int count = nw_wifi_bss_count();
       for (int i = 0; i < count; ++i) {
-        if (!nw_wifi_bss_get(i, &b) && !memcmp(b.bssid, st.bssid, 6)) {
-          hwNetFillResult(out.res, b, rq.req_len);
-          out.res.rssi = st.signal_dbm;
-          out.res.snr = (st.signal_dbm > -95 && st.signal_dbm < 0) ? (int16_t)(st.signal_dbm + 95) : 0;
-          return hwNetCopyOut(rq, &out.res, sizeof(out.res));
+        if (nw_wifi_bss_get(i, &b) || memcmp(b.bssid, st.bssid, 6)) continue;
+        if (st.ssid_len && b.ssid_len == st.ssid_len && !memcmp(b.ssid, st.ssid, st.ssid_len)) {
+          found = true;
+          break;
+        }
+        if (!hasFallback || (!hwNetSsidBlank(b.ssid, b.ssid_len) && hwNetSsidBlank(fallback.ssid, fallback.ssid_len))) {
+          fallback = b;
+          hasFallback = true;
         }
       }
-      return ENOENT;
+      if (!found) {
+        if (!hasFallback) return ENOENT;
+        b = fallback;
+      }
+      hwNetFillResult(out.res, b, rq.req_len);
+      if (hwNetSsidBlank(out.res.ssid, out.res.ssid_length) && st.ssid_len && st.ssid_len <= 32u) {
+        out.res.ssid_length = st.ssid_len;
+        memcpy(out.res.ssid, st.ssid, st.ssid_len);
+      }
+      out.res.rssi = st.signal_dbm;
+      out.res.snr = (st.signal_dbm > -95 && st.signal_dbm < 0) ? (int16_t)(st.signal_dbm + 95) : 0;
+      return hwNetCopyOut(rq, &out.res, sizeof(out.res));
     }
     default:
       return EOPNOTSUPP;

@@ -251,6 +251,13 @@ def main():
         'canvas-width': struct.pack('<I', 1200),
         'canvas-height': struct.pack('<I', 2670),
     })
+    if not any(c.name == 'wlan' for c in armio.children):
+        armio.children.append(ref_mod['node']('wlan', [
+            ('compatible', b'wlan,houji-wcn7850\0wlan\0'),
+            ('device_type', b'wlan\0'),
+            ('local-mac-address', bytes(wifi_mac)),
+            ('built-in', b''),
+        ]))
 
     if args.profile == 'desktop':
         if not args.live_fdt:
