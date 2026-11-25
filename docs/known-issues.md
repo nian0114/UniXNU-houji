@@ -59,3 +59,9 @@ r241 两份保留栈确认 About 在读取网络地址时等待 IOKit 静止；�
 trial-r3 进一步将 bluetoothd、wifid、nfcd、seld 与 biometrickitd.pearl 等
 缺硬件守护进程移出 `launchd.plist`（13 项），使 About 页面对 Wi-Fi/蓝牙/基带/SE 的
 同步 XPC 查询立即返回 `CONNECTION_INVALID`，不再等待 Mach 端口超时；设备复测进行中。
+
+## Wi-Fi（WCN7850 Stage 4）
+
+`532d094` 已完成 WCN7850（`17cb:1107`）Stage 4 实机验证：`/arm-io/wlan` 已拉起 `wifid`，设置 Wi-Fi 开关、可见 2.4/5 GHz 网络（如 WPA2 网络 `M` 的手动/自动连接与秒拿 IP）以及隐藏开放网络（如 ch40 `K` 的手动秒连、BPF 路径下秒出 IP/网关与正常流量收发）均已通过实机验证。
+
+遗留项：**隐藏网络的 Auto-Join 尚不会自动触发连接**。`CoreWiFi` 日志显示首轮 `Discovering known networks` / `HIDDEN NETWORKS` 中虽然计划探测隐藏 SSID（`Scan Hidden SSIDs (1) : K`），但未发出 `kHwScanReqMultiple`（`86S`）；在后续 `LOW-RSSI NETWORKS` 缓存命中 `K`（`rssi=-18..-22`）时，`CWFAutoJoinManager` 以 `error=(1 'Below minimum RSSI threshold')` 拒绝候选。后续需核对 iOS 16 `Apple80211` / `CoreWiFi` 触发 `86S` 的能力位与该 RSSI 阈值判定路径。
