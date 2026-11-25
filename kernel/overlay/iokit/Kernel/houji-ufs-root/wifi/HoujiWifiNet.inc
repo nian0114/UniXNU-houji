@@ -578,7 +578,12 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
           gHwScanFilterLen = 0u;
         }
         if (scanType == HOUJI_WIFI_SCAN_TYPE_CACHED && nw_wifi_bss_count() > 0) {
+          if (!gHwCachedScan) gHwCachedScan = thread_call_allocate(hwNetCachedScanDone, nullptr);
+          __atomic_store_n(&gHwScanning, 1u, __ATOMIC_RELEASE);
           gHwScanCursor = 0;
+          uint64_t at;
+          clock_interval_to_deadline(10, kMillisecondScale, &at);
+          thread_call_enter_delayed(gHwCachedScan, at);
           return 0;
         }
         const uint64_t now = hwNetContMs();
@@ -673,8 +678,16 @@ static int hwNetApple80211(bool set, houji_a80211req &rq) {
       case kHwDisassociate: case kHwDeauth:
         hwNetDisconnectUser();
         return 0;
+      case kHwAbortScan:
+        if (gHwCachedScan) thread_call_cancel(gHwCachedScan);
+        if (__atomic_exchange_n(&gHwScanning, 0u, __ATOMIC_ACQ_REL)) {
+          gHwScanCursor = 0;
+          gHwScanFilterLen = 0u;
+          hwNetPostEv(kHwEvScanDone, nullptr, 0);
+        }
+        return 0;
       case kHwScanCacheClear: case kHwLocale: case kHwCountryCode: case kHwPowerSave:
-      case kHwAuthType: case kHwCipherKey: case kHwAbortScan:
+      case kHwAuthType: case kHwCipherKey:
         return 0;
       default:
         return EOPNOTSUPP;
